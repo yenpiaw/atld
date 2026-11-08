@@ -1,4 +1,5 @@
 #include "atld/decode.h"
+#include <stddef.h>
 
 #define OPCODE(insn, mask, val) (((insn) & (mask)) == (val))
 
@@ -19,9 +20,11 @@ static int decode_bitmask_imm(int N, int imms, int immr, int datasize, uint64_t 
     if (S == levels) return -1;
     int esize = 1 << len;
     uint64_t welem = (S == 63) ? ~0ULL : ((1ULL << (S + 1)) - 1);
+    /* 1ULL << 64 is UB; mask explicitly for esize==64 */
+    uint64_t mask64 = (esize == 64) ? ~0ULL : ((1ULL << esize) - 1);
     uint64_t wmask;
-    if (R == 0) wmask = welem & ((1ULL << esize) - 1);
-    else wmask = ((welem >> R) | (welem << (esize - R))) & ((1ULL << esize) - 1);
+    if (R == 0) wmask = welem & mask64;
+    else wmask = ((welem >> R) | (welem << (esize - R))) & mask64;
     uint64_t mask = 0;
     for (int i = 0; i < datasize; i += esize) mask |= wmask << i;
     if (datasize == 32) mask &= 0xFFFFFFFF;
@@ -108,6 +111,18 @@ int decode_insn(uint32_t insn, struct decoded *o) {
         return 0;
     }
 
+    /* ADD/SUB (extended register, no flags) */
+    if (OPCODE(insn, 0x3fe00000, 0x0b200000)) {
+        o->op = ((insn>>30)&1) ? OP_SUB_EXT : OP_ADD_EXT;
+        o->sf = (insn>>31)&1;
+        o->shift = (insn>>13)&0x7;
+        o->rm = (insn>>16)&0x1f;
+        o->imm = (insn>>10)&0x7;
+        o->rn = (insn>>5)&0x1f;
+        o->rd = insn&0x1f;
+        return 0;
+    }
+
     /* ADD/SUB (shifted register, no flags) */
     if (OPCODE(insn, 0x3f200000, 0x0b000000)) {
         o->op = ((insn>>30)&1) ? OP_SUB_REG : OP_ADD_REG;
@@ -125,6 +140,25 @@ int decode_insn(uint32_t insn, struct decoded *o) {
         o->rm = (insn>>16)&0x1f;
         o->imm = (insn>>10)&0x3f;
         o->rn = (insn>>5)&0x1f; o->rd = insn&0x1f;
+        return 0;
+    }
+
+    /* ADC/ADCS/SBC/SBCS (shifted register).
+     * bits 28:24 = 11010, bit21 = 0.  op=bit30, S=bit29. */
+    /* ADC/ADCS/SBC/SBCS shifted register. Shift=3 (ROR) is reserved in
+     * ARM64 for these ops; SDIV/UDIV share the same bits[28:24]=11010 with
+     * bits[15:10]=0b11, so reject shift==3 to let SDIV/UDIV decoders run. */
+    if (OPCODE(insn, 0x1f200000, 0x1a000000) && ((insn>>22)&3) != 3) {
+        uint8_t op = (insn>>30)&1;
+        uint8_t S  = (insn>>29)&1;
+        o->op = op ? (S ? OP_SBCS_REG : OP_SBC_REG)
+                   : (S ? OP_ADCS_REG : OP_ADC_REG);
+        o->sf    = (insn>>31)&1;
+        o->shift = (insn>>22)&3;
+        o->rm    = (insn>>16)&0x1f;
+        o->imm   = (insn>>10)&0x3f;
+        o->rn    = (insn>>5)&0x1f;
+        o->rd    = insn&0x1f;
         return 0;
     }
 
@@ -195,6 +229,41 @@ int decode_insn(uint32_t insn, struct decoded *o) {
         o->rn = (insn>>5)&0x1f; o->rd = insn&0x1f; return 0;
     }
 
+    /* LDR/STR pre-index (imm9), 32/64-bit */
+    if (OPCODE(insn, 0xffc00c00, 0xf8400c00)) {
+        o->op = OP_LDR_PRE; o->sf = 1; o->imm = sext((insn>>12)&0x1ff, 9);
+        o->rn = (insn>>5)&0x1f; o->rd = insn&0x1f; return 0;
+    }
+    if (OPCODE(insn, 0xffc00c00, 0xf8000c00)) {
+        o->op = OP_STR_PRE; o->sf = 1; o->imm = sext((insn>>12)&0x1ff, 9);
+        o->rn = (insn>>5)&0x1f; o->rd = insn&0x1f; return 0;
+    }
+    if (OPCODE(insn, 0xffc00c00, 0xb8400c00)) {
+        o->op = OP_LDR_PRE; o->sf = 0; o->imm = sext((insn>>12)&0x1ff, 9);
+        o->rn = (insn>>5)&0x1f; o->rd = insn&0x1f; return 0;
+    }
+    if (OPCODE(insn, 0xffc00c00, 0xb8000c00)) {
+        o->op = OP_STR_PRE; o->sf = 0; o->imm = sext((insn>>12)&0x1ff, 9);
+        o->rn = (insn>>5)&0x1f; o->rd = insn&0x1f; return 0;
+    }
+    /* LDR/STR post-index (imm9), 32/64-bit */
+    if (OPCODE(insn, 0xffc00c00, 0xf8400400)) {
+        o->op = OP_LDR_POST; o->sf = 1; o->imm = sext((insn>>12)&0x1ff, 9);
+        o->rn = (insn>>5)&0x1f; o->rd = insn&0x1f; return 0;
+    }
+    if (OPCODE(insn, 0xffc00c00, 0xf8000400)) {
+        o->op = OP_STR_POST; o->sf = 1; o->imm = sext((insn>>12)&0x1ff, 9);
+        o->rn = (insn>>5)&0x1f; o->rd = insn&0x1f; return 0;
+    }
+    if (OPCODE(insn, 0xffc00c00, 0xb8400400)) {
+        o->op = OP_LDR_POST; o->sf = 0; o->imm = sext((insn>>12)&0x1ff, 9);
+        o->rn = (insn>>5)&0x1f; o->rd = insn&0x1f; return 0;
+    }
+    if (OPCODE(insn, 0xffc00c00, 0xb8000400)) {
+        o->op = OP_STR_POST; o->sf = 0; o->imm = sext((insn>>12)&0x1ff, 9);
+        o->rn = (insn>>5)&0x1f; o->rd = insn&0x1f; return 0;
+    }
+
     /* B / BL */
     if (OPCODE(insn, 0xfc000000, 0x14000000)) {
         o->op = OP_B; o->imm = sext(insn&0x3ffffff, 26) << 2; return 0;
@@ -243,6 +312,15 @@ int decode_insn(uint32_t insn, struct decoded *o) {
     /* SVC */
     if (OPCODE(insn, 0xffe0001f, 0xd4000001)) {
         o->op = OP_SVC; o->imm16 = (insn>>5)&0xffff; return 0;
+    }
+
+    /* HINT space: NOP, YIELD, WFE, WFI, BTI, PACIASP, AUTIASP, PACIBSP,
+     * AUTIBSP, ESB, PSB, CSDB, etc.  All safe to NOP on a CPU without the
+     * corresponding feature (x86_64 has none of these).  ARM defines them
+     * as HINT so compliant CPUs without the feature execute them as NOP. */
+    if (OPCODE(insn, 0xfffff01f, 0xd503201f)) {
+        o->op = OP_NOP;
+        return 0;
     }
 
     /* NOP */
@@ -355,6 +433,158 @@ int decode_insn(uint32_t insn, struct decoded *o) {
     if (OPCODE(insn, 0xFFC00000, 0xB9800000)) {
         o->op = OP_LDRSW_IMM;
         o->imm12 = (insn>>10)&0xfff;
+        o->rn = (insn>>5)&0x1f; o->rd = insn&0x1f;
+        return 0;
+    }
+
+    /* ANDS (immediate) — TST alias */
+    if (OPCODE(insn, 0x7f800000, 0x72000000)) {
+        int sf = (insn>>31)&1, N = (insn>>22)&1;
+        int immr = (insn>>16)&0x3f, imms = (insn>>10)&0x3f;
+        int datasize = sf ? 64 : 32;
+        uint64_t imm;
+        if (N != sf) return -1;
+        if (decode_bitmask_imm(N, imms, immr, datasize, &imm) != 0) return -1;
+        o->op = OP_ANDS_IMM;
+        o->sf = sf;
+        o->imm = (int64_t)imm;
+        o->rn = (insn>>5)&0x1f;
+        o->rd = insn&0x1f;
+        return 0;
+    }
+
+    /* MRS Xt, <sysreg> — hanya register spesifik yang di-handle.
+     * shift field menyimpan sysreg ID: 0=TPIDR_EL0, 1=DCZID_EL0, 2=CTR_EL0. */
+    if (OPCODE(insn, 0xffffffe0, 0xd53bd040)) {  // MRS Xt, TPIDR_EL0
+        o->op = OP_MRS; o->shift = 0; o->rd = insn&0x1f; return 0;
+    }
+    if (OPCODE(insn, 0xffffffe0, 0xd53b00e0)) {  // MRS Xt, DCZID_EL0
+        o->op = OP_MRS; o->shift = 1; o->rd = insn&0x1f; return 0;
+    }
+    if (OPCODE(insn, 0xffffffe0, 0xd53b0020)) {  // MRS Xt, CTR_EL0
+        o->op = OP_MRS; o->shift = 2; o->rd = insn&0x1f; return 0;
+    }
+
+    /* STP/LDP (SIMD&FP, 128-bit Q), offset/pre/post.
+     * Base: 0xAD000000 signed offset / 0xAD800000 pre / 0xAC800000 post (STP)
+     *       0xAD400000 signed offset / 0xADC00000 pre / 0xACC00000 post (LDP)
+     * imm7 in [21:15], Rt2 [14:10], Rn [9:5], Rt [4:0].
+     * shift: 0=offset, 1=pre, 2=post — sama dengan STP/LDP int. */
+    {
+        struct { uint32_t mask, val; int kind, mode; } tbl[] = {
+            { 0xFFC00000, 0xAD000000, 0, 0 }, { 0xFFC00000, 0xAD800000, 0, 1 }, { 0xFFC00000, 0xAC800000, 0, 2 },
+            { 0xFFC00000, 0xAD400000, 1, 0 }, { 0xFFC00000, 0xADC00000, 1, 1 }, { 0xFFC00000, 0xACC00000, 1, 2 },
+        };
+        for (size_t k = 0; k < sizeof(tbl)/sizeof(tbl[0]); k++) {
+            if ((insn & tbl[k].mask) == tbl[k].val) {
+                o->op = tbl[k].kind ? OP_LDP_Q : OP_STP_Q;
+                o->shift = (uint8_t)tbl[k].mode;
+                o->imm16 = (insn>>15)&0x7f;
+                o->rm = (insn>>10)&0x1f;
+                o->rn = (insn>>5)&0x1f;
+                o->rd = insn&0x1f;
+                return 0;
+            }
+        }
+    }
+
+    /* === SIMD minimal: untuk __memset_generic & __memcpy_generic === */
+
+    /* DUP Vd.16B, Wn — broadcast byte */
+    if (OPCODE(insn, 0xFFFFFC00, 0x4E010C00)) {
+        o->op = OP_DUP_B16;
+        o->rn = (insn>>5)&0x1f; o->rd = insn&0x1f;
+        return 0;
+    }
+
+    /* STR Q, [Xn, #imm12*16] */
+    if (OPCODE(insn, 0xFFC00000, 0x3D800000)) {
+        o->op = OP_STR_Q_IMM;
+        o->imm12 = (insn>>10)&0xfff;
+        o->rn = (insn>>5)&0x1f; o->rd = insn&0x1f;
+        return 0;
+    }
+    /* STR Q, [Xn, Xm{, lsl #4}] — register offset, S bit at 12 */
+    if (OPCODE(insn, 0xFFE0EC00, 0x3CA06800)) {
+        o->op = OP_STR_Q_REG;
+        o->shift = (insn>>12)&1;
+        o->rm = (insn>>16)&0x1f;
+        o->rn = (insn>>5)&0x1f; o->rd = insn&0x1f;
+        return 0;
+    }
+    /* STUR Q, [Xn, #imm9] */
+    if (OPCODE(insn, 0xFFE00C00, 0x3C800000)) {
+        o->op = OP_STUR_Q;
+        o->imm = sext((insn>>12)&0x1ff, 9);
+        o->rn = (insn>>5)&0x1f; o->rd = insn&0x1f;
+        return 0;
+    }
+
+    /* LDR Q, [Xn, #imm12*16] */
+    if (OPCODE(insn, 0xFFC00000, 0x3DC00000)) {
+        o->op = OP_LDR_Q_IMM;
+        o->imm12 = (insn>>10)&0xfff;
+        o->rn = (insn>>5)&0x1f; o->rd = insn&0x1f;
+        return 0;
+    }
+    /* LDR Q, [Xn, Xm{, lsl #4}] */
+    if (OPCODE(insn, 0xFFE0EC00, 0x3CE06800)) {
+        o->op = OP_LDR_Q_REG;
+        o->shift = (insn>>12)&1;
+        o->rm = (insn>>16)&0x1f;
+        o->rn = (insn>>5)&0x1f; o->rd = insn&0x1f;
+        return 0;
+    }
+    /* LDUR Q, [Xn, #imm9] */
+    if (OPCODE(insn, 0xFFE00C00, 0x3CC00000)) {
+        o->op = OP_LDUR_Q;
+        o->imm = sext((insn>>12)&0x1ff, 9);
+        o->rn = (insn>>5)&0x1f; o->rd = insn&0x1f;
+        return 0;
+    }
+
+    /* STR S, [Xn, #imm12*4] */
+    if (OPCODE(insn, 0xFFC00000, 0xBD000000)) {
+        o->op = OP_STR_S_IMM;
+        o->imm12 = (insn>>10)&0xfff;
+        o->rn = (insn>>5)&0x1f; o->rd = insn&0x1f;
+        return 0;
+    }
+    /* STR S, [Xn, Xm{, lsl #2}] */
+    if (OPCODE(insn, 0xFFE0EC00, 0xBC206800)) {
+        o->op = OP_STR_S_REG;
+        o->shift = (insn>>12)&1;
+        o->rm = (insn>>16)&0x1f;
+        o->rn = (insn>>5)&0x1f; o->rd = insn&0x1f;
+        return 0;
+    }
+    /* STUR S, [Xn, #imm9] */
+    if (OPCODE(insn, 0xFFE00C00, 0xBC000000)) {
+        o->op = OP_STUR_S;
+        o->imm = sext((insn>>12)&0x1ff, 9);
+        o->rn = (insn>>5)&0x1f; o->rd = insn&0x1f;
+        return 0;
+    }
+
+    /* LDR S, [Xn, #imm12*4] */
+    if (OPCODE(insn, 0xFFC00000, 0xBD400000)) {
+        o->op = OP_LDR_S_IMM;
+        o->imm12 = (insn>>10)&0xfff;
+        o->rn = (insn>>5)&0x1f; o->rd = insn&0x1f;
+        return 0;
+    }
+    /* LDR S, [Xn, Xm{, lsl #2}] */
+    if (OPCODE(insn, 0xFFE0EC00, 0xBC606800)) {
+        o->op = OP_LDR_S_REG;
+        o->shift = (insn>>12)&1;
+        o->rm = (insn>>16)&0x1f;
+        o->rn = (insn>>5)&0x1f; o->rd = insn&0x1f;
+        return 0;
+    }
+    /* LDUR S, [Xn, #imm9] */
+    if (OPCODE(insn, 0xFFE00C00, 0xBC400000)) {
+        o->op = OP_LDUR_S;
+        o->imm = sext((insn>>12)&0x1ff, 9);
         o->rn = (insn>>5)&0x1f; o->rd = insn&0x1f;
         return 0;
     }

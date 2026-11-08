@@ -83,11 +83,35 @@ int elf_load(const char *path, struct guest_cpu *cpu) {
     memset(cpu->v, 0, sizeof(cpu->v));
     cpu->pc = eh->e_entry;
 
+    /* Dummy TLS: 4KB zeroed. glibc writes tcbhead_t here; layout may be
+     * wrong for our purposes but a valid pointer prevents NULL deref. */
+    void *tls = mmap(NULL, 4096, PROT_READ|PROT_WRITE,
+                     MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+    if (tls == MAP_FAILED) { perror("mmap tls"); munmap(fmap, fsize); return -1; }
+    cpu->tls_base = (uint64_t)tls;
+
     void *stack = mmap(NULL, 1 << 20, PROT_READ|PROT_WRITE,
                        MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
     if (stack == MAP_FAILED) { perror("mmap stack"); munmap(fmap, fsize); return -1; }
-    cpu->sp = (uint64_t)stack + (1 << 20) - 16;
-    *(uint64_t *)cpu->sp = 0;   /* argc = 0 */
+
+    /* Linux process ABI: minimal stack frame so glibc's __libc_start_main
+     * walk of argv/envp/auxv terminates at AT_NULL and does not read past
+     * the top of the stack.
+     *   sp[0] = argc = 0
+     *   sp[1] = argv[0] = NULL           (argv terminator)
+     *   sp[2] = envp[0] = NULL           (envp terminator)
+     *   sp[3] = auxv[0].type = AT_NULL   (auxv terminator)
+     *   sp[4] = auxv[0].val = 0
+     * sp = stack_top - 40 so sp+16 is still inside the mapping. */
+    uint64_t *top = (uint64_t *)((char *)stack + (1 << 20));
+    top[-1] = 0;   /* auxv[0].val */
+    top[-2] = 0;   /* auxv[0].type = AT_NULL */
+    top[-3] = 0;   /* envp[0] = NULL */
+    top[-4] = 0;   /* argv[0] = NULL */
+    top[-5] = 0;   /* argc = 0 */
+    cpu->sp = (uint64_t)&top[-5];
+    fprintf(stderr, "atld: stack sp=0x%llx top=0x%llx (40-byte frame: argc/argv/envp/auxv)",
+            (unsigned long long)cpu->sp, (unsigned long long)(uintptr_t)top);
 
     munmap(fmap, fsize);
     return 0;

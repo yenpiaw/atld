@@ -10,6 +10,10 @@ struct guest_cpu {
     uint64_t v[32][2];    /* v0..v31, 128-bit, unused in M2 */
     uint64_t fpcr;
     uint64_t fpsr;
+    uint64_t tls_base;
+    /* trace: 64 PC terakhir, untuk debug crash */
+    uint64_t pc_history[64];
+    int pc_history_idx;
 };
 
 static inline uint64_t get_x(const struct guest_cpu *c, int i) {

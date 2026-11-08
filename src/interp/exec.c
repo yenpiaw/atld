@@ -20,9 +20,11 @@ static uint64_t apply_sf(uint64_t v, uint8_t sf) {
 static uint64_t shifted(uint64_t v, uint8_t kind, uint32_t amt, uint8_t sf) {
     if (!sf) v &= 0xffffffffULL;
     switch (kind) {
-    case 0: return v << amt;                                  /* LSL */
-    case 1: return v >> amt;                                  /* LSR */
-    case 2: return (uint64_t)(((int64_t)v) >> amt);           /* ASR */
+    case 0: return v << amt;
+    case 1: return v >> amt;
+    case 2:
+        if (sf) return (uint64_t)(((int64_t)v) >> amt);
+        return (uint64_t)(uint32_t)(((int32_t)(uint32_t)v) >> amt);
     default: return 0;
     }
 }
@@ -71,6 +73,8 @@ static int check_cond(const struct guest_cpu *cpu, uint8_t cond) {
 }
 
 int interp_step(struct guest_cpu *cpu) {
+    cpu->pc_history[cpu->pc_history_idx & 63] = cpu->pc;
+    cpu->pc_history_idx++;
     uint32_t insn = *(uint32_t *)cpu->pc;
     struct decoded d;
     if (decode_insn(insn, &d) != 0) {
@@ -166,8 +170,8 @@ int interp_step(struct guest_cpu *cpu) {
         else if (d.shift == 1) { addr = base + (uint64_t)off; wb = addr; }
         else                   { addr = base;                  wb = base + (uint64_t)off; }
         if (d.op == OP_STP) {
-            *(uint64_t *)addr       = getr(cpu, d.rd);
-            *(uint64_t *)(addr + 8) = getr(cpu, d.rm);
+            *(uint64_t *)addr         = getr(cpu, d.rd);
+            *(uint64_t *)(addr + 8)   = getr(cpu, d.rm);
         } else {
             setr(cpu, d.rd, *(uint64_t *)addr);
             setr(cpu, d.rm, *(uint64_t *)(addr + 8));
@@ -276,6 +280,222 @@ int interp_step(struct guest_cpu *cpu) {
         uint64_t addr = base + ((uint64_t)d.imm12 << 2);
         int32_t v = *(int32_t *)addr;
         setr(cpu, d.rd, (uint64_t)(int64_t)v);
+        break;
+    }
+
+    case OP_ADD_EXT:
+    case OP_SUB_EXT: {
+        uint64_t rm = getr(cpu, d.rm);
+        uint64_t ext;
+        switch (d.shift) {
+        case 0: ext = (uint64_t)(uint8_t)rm; break;
+        case 1: ext = (uint64_t)(uint16_t)rm; break;
+        case 2: ext = (uint64_t)(uint32_t)rm; break;
+        case 3: ext = rm; break;
+        case 4: ext = (uint64_t)(int64_t)(int8_t)(uint8_t)rm; break;
+        case 5: ext = (uint64_t)(int64_t)(int16_t)(uint16_t)rm; break;
+        case 6: ext = (uint64_t)(int64_t)(int32_t)(uint32_t)rm; break;
+        case 7: ext = rm; break;
+        default: ext = 0;
+        }
+        ext <<= (uint32_t)d.imm;
+        uint64_t rn = getr(cpu, d.rn);
+        if (!d.sf) rn &= 0xffffffffULL;
+        uint64_t r = (d.op == OP_ADD_EXT) ? (rn + ext) : (rn - ext);
+        setr(cpu, d.rd, apply_sf(r, d.sf));
+        break;
+    }
+    case OP_LDR_PRE:
+    case OP_STR_PRE:
+    case OP_LDR_POST:
+    case OP_STR_POST: {
+        uint64_t base = (d.rn == 31) ? cpu->sp : getr(cpu, d.rn);
+        int is_pre  = (d.op == OP_LDR_PRE || d.op == OP_STR_PRE);
+        int is_load = (d.op == OP_LDR_PRE || d.op == OP_LDR_POST);
+        uint64_t addr = is_pre ? (base + (uint64_t)d.imm) : base;
+        uint64_t newbase = is_pre ? addr : (base + (uint64_t)d.imm);
+        if (is_load) {
+            uint64_t v = d.sf ? *(uint64_t *)addr : (uint64_t)*(uint32_t *)addr;
+            setr(cpu, d.rd, v);
+        } else {
+            uint64_t v = getr(cpu, d.rd);
+            if (d.sf) *(uint64_t *)addr = v;
+            else      *(uint32_t *)addr = (uint32_t)v;
+        }
+        if (d.rn == 31) cpu->sp = newbase;
+        else            cpu->x[d.rn] = newbase;
+        break;
+    }
+
+    case OP_ANDS_IMM: {
+        uint64_t rn = getr(cpu, d.rn);
+        uint64_t imm = (uint64_t)d.imm;
+        uint64_t r = rn & imm;
+        if (d.rd != 31) setr(cpu, d.rd, apply_sf(r, d.sf));
+        /* logical ops: NZ from result, C=0, V=0 */
+        uint32_t flags = cpu->pstate & ~((1u<<31)|(1u<<30)|(1u<<29)|(1u<<28));
+        uint64_t mask = d.sf ? ~0ULL : 0xffffffffULL;
+        uint64_t mr = r & mask;
+        int sb = d.sf ? 63 : 31;
+        if ((mr >> sb) & 1) flags |= (1u<<31);
+        if (mr == 0)        flags |= (1u<<30);
+        cpu->pstate = flags;
+        break;
+    }
+    case OP_MRS: {
+        switch (d.shift) {
+        case 0: setr(cpu, d.rd, cpu->tls_base); break;   // TPIDR_EL0
+        case 1: setr(cpu, d.rd, 0x10);           break;   // DCZID_EL0: DZP=1, skip DC ZVA
+        case 2: setr(cpu, d.rd, 0x8444c004);     break;   // CTR_EL0: 64-byte I/D cache
+        }
+        break;
+    }
+
+    case OP_STP_Q:
+    case OP_LDP_Q: {
+        uint64_t base = (d.rn == 31) ? cpu->sp : getr(cpu, d.rn);
+        int64_t off = sext64(d.imm16, 7) * 16;
+        uint64_t addr, wb = 0;
+        if (d.shift == 0)      addr = base + (uint64_t)off;
+        else if (d.shift == 1) { addr = base + (uint64_t)off; wb = addr; }
+        else                   { addr = base;                  wb = base + (uint64_t)off; }
+        if (d.op == OP_STP_Q) {
+            *(uint64_t *)addr         = cpu->v[d.rd][0];
+            *(uint64_t *)(addr + 8)   = cpu->v[d.rd][1];
+            *(uint64_t *)(addr + 16)  = cpu->v[d.rm][0];
+            *(uint64_t *)(addr + 24)  = cpu->v[d.rm][1];
+        } else {
+            cpu->v[d.rd][0] = *(uint64_t *)addr;
+            cpu->v[d.rd][1] = *(uint64_t *)(addr + 8);
+            cpu->v[d.rm][0] = *(uint64_t *)(addr + 16);
+            cpu->v[d.rm][1] = *(uint64_t *)(addr + 24);
+        }
+        if (d.shift != 0) {
+            if (d.rn == 31) cpu->sp = wb;
+            else            cpu->x[d.rn] = wb;
+        }
+        break;
+    }
+
+    /* === SIMD minimal === */
+    case OP_DUP_B16: {
+        uint8_t b = (uint8_t)getr(cpu, d.rn);
+        uint64_t w = 0x0101010101010101ULL * b;
+        cpu->v[d.rd][0] = w;
+        cpu->v[d.rd][1] = w;
+        break;
+    }
+    case OP_STR_Q_IMM: {
+        uint64_t base = (d.rn == 31) ? cpu->sp : getr(cpu, d.rn);
+        uint64_t addr = base + ((uint64_t)d.imm12 << 4);
+        *(uint64_t *)addr       = cpu->v[d.rd][0];
+        *(uint64_t *)(addr + 8) = cpu->v[d.rd][1];
+        break;
+    }
+    case OP_STR_Q_REG: {
+        uint64_t base = (d.rn == 31) ? cpu->sp : getr(cpu, d.rn);
+        uint64_t addr = base + (getr(cpu, d.rm) << (d.shift ? 4 : 0));
+        *(uint64_t *)addr       = cpu->v[d.rd][0];
+        *(uint64_t *)(addr + 8) = cpu->v[d.rd][1];
+        break;
+    }
+    case OP_STUR_Q: {
+        uint64_t base = (d.rn == 31) ? cpu->sp : getr(cpu, d.rn);
+        uint64_t addr = base + (uint64_t)d.imm;
+        *(uint64_t *)addr       = cpu->v[d.rd][0];
+        *(uint64_t *)(addr + 8) = cpu->v[d.rd][1];
+        break;
+    }
+    case OP_LDR_Q_IMM: {
+        uint64_t base = (d.rn == 31) ? cpu->sp : getr(cpu, d.rn);
+        uint64_t addr = base + ((uint64_t)d.imm12 << 4);
+        cpu->v[d.rd][0] = *(uint64_t *)addr;
+        cpu->v[d.rd][1] = *(uint64_t *)(addr + 8);
+        break;
+    }
+    case OP_LDR_Q_REG: {
+        uint64_t base = (d.rn == 31) ? cpu->sp : getr(cpu, d.rn);
+        uint64_t addr = base + (getr(cpu, d.rm) << (d.shift ? 4 : 0));
+        cpu->v[d.rd][0] = *(uint64_t *)addr;
+        cpu->v[d.rd][1] = *(uint64_t *)(addr + 8);
+        break;
+    }
+    case OP_LDUR_Q: {
+        uint64_t base = (d.rn == 31) ? cpu->sp : getr(cpu, d.rn);
+        uint64_t addr = base + (uint64_t)d.imm;
+        cpu->v[d.rd][0] = *(uint64_t *)addr;
+        cpu->v[d.rd][1] = *(uint64_t *)(addr + 8);
+        break;
+    }
+    case OP_STR_S_IMM: {
+        uint64_t base = (d.rn == 31) ? cpu->sp : getr(cpu, d.rn);
+        uint64_t addr = base + ((uint64_t)d.imm12 << 2);
+        *(uint32_t *)addr = (uint32_t)cpu->v[d.rd][0];
+        break;
+    }
+    case OP_STR_S_REG: {
+        uint64_t base = (d.rn == 31) ? cpu->sp : getr(cpu, d.rn);
+        uint64_t addr = base + (getr(cpu, d.rm) << (d.shift ? 2 : 0));
+        *(uint32_t *)addr = (uint32_t)cpu->v[d.rd][0];
+        break;
+    }
+    case OP_STUR_S: {
+        uint64_t base = (d.rn == 31) ? cpu->sp : getr(cpu, d.rn);
+        uint64_t addr = base + (uint64_t)d.imm;
+        *(uint32_t *)addr = (uint32_t)cpu->v[d.rd][0];
+        break;
+    }
+    case OP_LDR_S_IMM: {
+        uint64_t base = (d.rn == 31) ? cpu->sp : getr(cpu, d.rn);
+        uint64_t addr = base + ((uint64_t)d.imm12 << 2);
+        cpu->v[d.rd][0] = (uint64_t)*(uint32_t *)addr;
+        break;
+    }
+    case OP_LDR_S_REG: {
+        uint64_t base = (d.rn == 31) ? cpu->sp : getr(cpu, d.rn);
+        uint64_t addr = base + (getr(cpu, d.rm) << (d.shift ? 2 : 0));
+        cpu->v[d.rd][0] = (uint64_t)*(uint32_t *)addr;
+        break;
+    }
+    case OP_LDUR_S: {
+        uint64_t base = (d.rn == 31) ? cpu->sp : getr(cpu, d.rn);
+        uint64_t addr = base + (uint64_t)d.imm;
+        cpu->v[d.rd][0] = (uint64_t)*(uint32_t *)addr;
+        break;
+    }
+
+    case OP_ADC_REG:
+    case OP_ADCS_REG:
+    case OP_SBC_REG:
+    case OP_SBCS_REG: {
+        uint64_t a = getr(cpu, d.rn);
+        uint64_t b = shifted(getr(cpu, d.rm), d.shift, (uint32_t)d.imm, d.sf);
+        uint32_t C_in = (cpu->pstate >> 29) & 1;
+        int is_sub  = (d.op == OP_SBC_REG || d.op == OP_SBCS_REG);
+        int set_flg = (d.op == OP_ADCS_REG || d.op == OP_SBCS_REG);
+        int width = d.sf ? 64 : 32;
+        uint64_t mask = d.sf ? ~0ULL : 0xffffffffULL;
+        a &= mask;
+        b &= mask;
+
+        uint64_t rb = is_sub ? (~b & mask) : b;
+        __uint128_t full = (__uint128_t)a + rb + C_in;
+        uint64_t r = (uint64_t)full & mask;
+        int C_out = (int)((full >> width) & 1);
+
+        if (set_flg) {
+            uint32_t flags = cpu->pstate & ~((1u<<31)|(1u<<30)|(1u<<29)|(1u<<28));
+            int sb = width - 1;
+            if ((r >> sb) & 1) flags |= (1u<<31);
+            if (r == 0)        flags |= (1u<<30);
+            if (C_out)         flags |= (1u<<29);
+            uint64_t sa = (a >> sb) & 1;
+            uint64_t sbv = (rb >> sb) & 1;
+            uint64_t sr = (r >> sb) & 1;
+            if (sa == sbv && sr != sa) flags |= (1u<<28);
+            cpu->pstate = flags;
+        }
+        setr(cpu, d.rd, apply_sf(r, d.sf));
         break;
     }
 
