@@ -3,11 +3,19 @@
 #include "atld/interp.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 int main(int argc, char **argv) {
     if (argc < 2) {
-        fprintf(stderr, "usage: %s <aarch64-elf>\n", argv[0]);
+        fprintf(stderr, "usage: %s [--dump] <aarch64-elf>\n", argv[0]);
         return 2;
+    }
+    if (strcmp(argv[1], "--dump") == 0) {
+        if (argc < 3) {
+            fprintf(stderr, "usage: %s --dump <aarch64-elf>\n", argv[0]);
+            return 2;
+        }
+        return elf_dump(argv[2]) == 0 ? 0 : 1;
     }
     struct guest_cpu *cpu = calloc(1, sizeof(*cpu));
     if (!cpu) { perror("calloc"); return 1; }

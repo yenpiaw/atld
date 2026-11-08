@@ -92,3 +92,121 @@ int elf_load(const char *path, struct guest_cpu *cpu) {
     munmap(fmap, fsize);
     return 0;
 }
+
+
+static const char *elf_type_name(uint16_t t) {
+    switch (t) {
+    case ET_NONE: return "NONE";
+    case ET_REL:  return "REL";
+    case ET_EXEC: return "EXEC";
+    case ET_DYN:  return "DYN";
+    case ET_CORE: return "CORE";
+    default:      return "UNKNOWN";
+    }
+}
+
+static const char *elf_machine_name(uint16_t m) {
+    switch (m) {
+    case EM_AARCH64: return "AArch64";
+    case EM_ARM:     return "ARM";
+    case EM_X86_64:  return "Advanced Micro Devices X86-64";
+    case EM_386:     return "Intel 80386";
+    default:         return "UNKNOWN";
+    }
+}
+
+static const char *phdr_type_name(uint32_t t) {
+    switch (t) {
+    case PT_NULL:    return "NULL";
+    case PT_LOAD:    return "LOAD";
+    case PT_DYNAMIC: return "DYNAMIC";
+    case PT_INTERP:  return "INTERP";
+    case PT_NOTE:    return "NOTE";
+    case PT_SHLIB:   return "SHLIB";
+    case PT_PHDR:    return "PHDR";
+    case PT_TLS:     return "TLS";
+#ifdef PT_GNU_EH_FRAME
+    case PT_GNU_EH_FRAME: return "GNU_EH_FRAME";
+#endif
+#ifdef PT_GNU_STACK
+    case PT_GNU_STACK:    return "GNU_STACK";
+#endif
+#ifdef PT_GNU_RELRO
+    case PT_GNU_RELRO:    return "GNU_RELRO";
+#endif
+    default:         return "UNKNOWN";
+    }
+}
+
+static void fmt_phdr_flags(uint32_t flags, char out[4]) {
+    out[0] = (flags & PF_R) ? 'R' : ' ';
+    out[1] = (flags & PF_W) ? 'W' : ' ';
+    out[2] = (flags & PF_X) ? 'E' : ' ';
+    out[3] = '\0';
+}
+
+/* Read-only inspection: print ELF header + program headers.
+ * Does NOT map any segment, does NOT set up guest CPU state.
+ * Output format is deliberately readelf-like so tests can diff fields. */
+int elf_dump(const char *path) {
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) { perror("open"); return -1; }
+    struct stat st;
+    if (fstat(fd, &st) < 0) { perror("fstat"); close(fd); return -1; }
+    size_t fsize = (size_t)st.st_size;
+    void *fmap = mmap(NULL, fsize, PROT_READ, MAP_PRIVATE, fd, 0);
+    close(fd);
+    if (fmap == MAP_FAILED) { perror("mmap"); return -1; }
+
+    Elf64_Ehdr *eh = (Elf64_Ehdr *)fmap;
+    if (memcmp(eh->e_ident, ELFMAG, SELFMAG) != 0 ||
+        eh->e_ident[EI_CLASS] != ELFCLASS64 ||
+        eh->e_ident[EI_DATA]  != ELFDATA2LSB ||
+        eh->e_machine         != EM_AARCH64) {
+        fprintf(stderr, "atld: not an AArch64 ELF64 file\n");
+        munmap(fmap, fsize); return -1;
+    }
+
+    printf("atld: ELF Header:\n");
+    printf("atld:   Class:                             ELF64\n");
+    printf("atld:   Data:                              little endian\n");
+    printf("atld:   Type:                              %s\n", elf_type_name(eh->e_type));
+    printf("atld:   Machine:                           %s\n", elf_machine_name(eh->e_machine));
+    printf("atld:   Entry point address:               0x%llx\n", (unsigned long long)eh->e_entry);
+    printf("atld:   Start of program headers:          %llu (bytes into file)\n", (unsigned long long)eh->e_phoff);
+    printf("atld:   Start of section headers:          %llu (bytes into file)\n", (unsigned long long)eh->e_shoff);
+    printf("atld:   Flags:                             0x%x\n", eh->e_flags);
+    printf("atld:   Size of this header:               %u (bytes)\n", eh->e_ehsize);
+    printf("atld:   Size of program headers:           %u (bytes)\n", eh->e_phentsize);
+    printf("atld:   Number of program headers:         %u\n", eh->e_phnum);
+    printf("atld:   Size of section headers:           %u (bytes)\n", eh->e_shentsize);
+    printf("atld:   Number of section headers:         %u\n", eh->e_shnum);
+    printf("atld:   Section header string table index: %u\n", eh->e_shstrndx);
+
+    printf("atld: \n");
+    printf("atld: Program Headers:\n");
+    printf("atld:   %-14s %-10s %-18s %-18s %-10s %-10s %-3s %s\n",
+           "Type", "Offset", "VirtAddr", "PhysAddr", "FileSiz", "MemSiz", "Flg", "Align");
+
+    for (int i = 0; i < eh->e_phnum; i++) {
+        Elf64_Phdr *ph = (Elf64_Phdr *)((char *)fmap + eh->e_phoff + (size_t)i*eh->e_phentsize);
+        char flg[4];
+        fmt_phdr_flags(ph->p_flags, flg);
+        printf("atld:   %-14s 0x%08llx 0x%016llx 0x%016llx 0x%08llx 0x%08llx %s 0x%llx\n",
+               phdr_type_name(ph->p_type),
+               (unsigned long long)ph->p_offset,
+               (unsigned long long)ph->p_vaddr,
+               (unsigned long long)ph->p_paddr,
+               (unsigned long long)ph->p_filesz,
+               (unsigned long long)ph->p_memsz,
+               flg,
+               (unsigned long long)ph->p_align);
+        if (ph->p_type == PT_INTERP && ph->p_offset + ph->p_filesz <= fsize) {
+            printf("atld:   [Requesting program interpreter: %.*s]\n",
+                   (int)ph->p_filesz, (char *)fmap + ph->p_offset);
+        }
+    }
+
+    munmap(fmap, fsize);
+    return 0;
+}
