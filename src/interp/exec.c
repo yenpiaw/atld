@@ -27,6 +27,49 @@ static uint64_t shifted(uint64_t v, uint8_t kind, uint32_t amt, uint8_t sf) {
     }
 }
 
+static void set_nzcv(struct guest_cpu *cpu, uint64_t result, uint8_t sf,
+                      int sub, uint64_t a, uint64_t b) {
+    uint32_t flags = cpu->pstate & ~((1u<<31)|(1u<<30)|(1u<<29)|(1u<<28));
+    uint64_t mask = sf ? ~0ULL : 0xffffffffULL;
+    uint64_t ma = a & mask, mb = b & mask, mr = result & mask;
+    int sb = sf ? 63 : 31;
+
+    if ((mr >> sb) & 1) flags |= (1u<<31);                  /* N */
+    if (mr == 0)        flags |= (1u<<30);                  /* Z */
+    if (sub) {
+        if (ma >= mb)   flags |= (1u<<29);                  /* C: no borrow */
+    } else {
+        if (sf) { if ((ma + mb) < ma) flags |= (1u<<29); }
+        else    { if ((ma + mb) > 0xffffffffULL) flags |= (1u<<29); }
+    }
+    uint64_t sa = (ma>>sb)&1, sbv = (mb>>sb)&1, sr = (mr>>sb)&1;
+    if (sub) { if (sa != sbv && sr != sa) flags |= (1u<<28); }   /* V */
+    else     { if (sa == sbv && sr != sa) flags |= (1u<<28); }
+    cpu->pstate = flags;
+}
+
+static int check_cond(const struct guest_cpu *cpu, uint8_t cond) {
+    uint32_t f = cpu->pstate;
+    int N=(f>>31)&1, Z=(f>>30)&1, C=(f>>29)&1, V=(f>>28)&1;
+    switch (cond) {
+    case 0:  return Z;
+    case 1:  return !Z;
+    case 2:  return C;
+    case 3:  return !C;
+    case 4:  return N;
+    case 5:  return !N;
+    case 6:  return V;
+    case 7:  return !V;
+    case 8:  return C && !Z;
+    case 9:  return !C || Z;
+    case 10: return N == V;
+    case 11: return N != V;
+    case 12: return !Z && (N == V);
+    case 13: return Z || (N != V);
+    default: return 1;
+    }
+}
+
 int interp_step(struct guest_cpu *cpu) {
     uint32_t insn = *(uint32_t *)cpu->pc;
     struct decoded d;
@@ -156,6 +199,65 @@ int interp_step(struct guest_cpu *cpu) {
         fprintf(stderr, "atld: BRK #%u at pc=0x%llx\n",
                 d.imm16, (unsigned long long)cpu->pc);
         return -1;
+
+    case OP_ADDS_IMM:
+    case OP_SUBS_IMM: {
+        uint64_t rn  = getr(cpu, d.rn);
+        uint64_t imm = (uint64_t)d.imm12;
+        if (d.shift) imm <<= 12;
+        uint64_t r = (d.op == OP_ADDS_IMM) ? (rn + imm) : (rn - imm);
+        r = apply_sf(r, d.sf);
+        if (d.rd != 31) setr(cpu, d.rd, r);
+        set_nzcv(cpu, r, d.sf, d.op == OP_SUBS_IMM, rn, imm);
+        break;
+    }
+    case OP_ADDS_REG:
+    case OP_SUBS_REG: {
+        uint64_t rn = getr(cpu, d.rn);
+        uint64_t rm = shifted(getr(cpu, d.rm), d.shift, (uint32_t)d.imm, d.sf);
+        uint64_t r = (d.op == OP_ADDS_REG) ? (rn + rm) : (rn - rm);
+        r = apply_sf(r, d.sf);
+        if (d.rd != 31) setr(cpu, d.rd, r);
+        set_nzcv(cpu, r, d.sf, d.op == OP_SUBS_REG, rn, rm);
+        break;
+    }
+    case OP_B_COND:
+        if (check_cond(cpu, (uint8_t)d.shift)) next_pc = cpu->pc + (uint64_t)d.imm;
+        break;
+    case OP_CBZ:
+    case OP_CBNZ: {
+        uint64_t rt = getr(cpu, d.rd);
+        if (!d.sf) rt &= 0xffffffffULL;
+        int take = (d.op == OP_CBZ) ? (rt == 0) : (rt != 0);
+        if (take) next_pc = cpu->pc + (uint64_t)d.imm;
+        break;
+    }
+    case OP_LDUR:
+    case OP_STUR: {
+        uint64_t base = (d.rn == 31) ? cpu->sp : getr(cpu, d.rn);
+        uint64_t addr = base + (uint64_t)d.imm;
+        uint8_t size = d.shift;
+        uint64_t v;
+        if (d.op == OP_STUR) {
+            v = getr(cpu, d.rd);
+            switch (size) {
+            case 0: *(uint8_t *)addr  = (uint8_t)v;  break;
+            case 1: *(uint16_t *)addr = (uint16_t)v; break;
+            case 2: *(uint32_t *)addr = (uint32_t)v; break;
+            case 3: *(uint64_t *)addr = v;            break;
+            }
+        } else {
+            switch (size) {
+            case 0: v = *(uint8_t *)addr;  break;
+            case 1: v = *(uint16_t *)addr; break;
+            case 2: v = *(uint32_t *)addr; break;
+            case 3: v = *(uint64_t *)addr; break;
+            default: v = 0;
+            }
+            setr(cpu, d.rd, v);
+        }
+        break;
+    }
 
     default:
         fprintf(stderr, "atld: unimpl op=%d at pc=0x%llx\n",

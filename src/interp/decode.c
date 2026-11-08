@@ -55,6 +55,38 @@ int decode_insn(uint32_t insn, struct decoded *o) {
         return 0;
     }
 
+    /* ADDS / SUBS (immediate, also CMP/CMN imm) */
+    if (OPCODE(insn, 0x7f000000, 0x31000000)) {
+        o->op = OP_ADDS_IMM; o->sf = (insn>>31)&1;
+        o->shift = (insn>>22)&1;
+        o->imm12 = (insn>>10)&0xfff; o->rn = (insn>>5)&0x1f; o->rd = insn&0x1f;
+        return 0;
+    }
+    if (OPCODE(insn, 0x7f000000, 0x71000000)) {
+        o->op = OP_SUBS_IMM; o->sf = (insn>>31)&1;
+        o->shift = (insn>>22)&1;
+        o->imm12 = (insn>>10)&0xfff; o->rn = (insn>>5)&0x1f; o->rd = insn&0x1f;
+        return 0;
+    }
+
+    /* ADDS / SUBS (shifted register, also CMP/CMN reg) */
+    if (OPCODE(insn, 0x7f200000, 0x2b000000)) {
+        o->op = OP_ADDS_REG; o->sf = (insn>>31)&1;
+        o->shift = (insn>>22)&3;
+        o->rm = (insn>>16)&0x1f;
+        o->imm = (insn>>10)&0x3f;
+        o->rn = (insn>>5)&0x1f; o->rd = insn&0x1f;
+        return 0;
+    }
+    if (OPCODE(insn, 0x7f200000, 0x6b000000)) {
+        o->op = OP_SUBS_REG; o->sf = (insn>>31)&1;
+        o->shift = (insn>>22)&3;
+        o->rm = (insn>>16)&0x1f;
+        o->imm = (insn>>10)&0x3f;
+        o->rn = (insn>>5)&0x1f; o->rd = insn&0x1f;
+        return 0;
+    }
+
     /* ADD/SUB (shifted register, no flags) */
     if (OPCODE(insn, 0x3f200000, 0x0b000000)) {
         o->op = ((insn>>30)&1) ? OP_SUB_REG : OP_ADD_REG;
@@ -148,6 +180,35 @@ int decode_insn(uint32_t insn, struct decoded *o) {
     }
     if (OPCODE(insn, 0xfc000000, 0x94000000)) {
         o->op = OP_BL; o->imm = sext(insn&0x3ffffff, 26) << 2; return 0;
+    }
+
+    /* B.cond */
+    if (OPCODE(insn, 0xff000010, 0x54000000)) {
+        o->op = OP_B_COND; o->shift = insn & 0xf;
+        o->imm = sext((insn>>5)&0x7ffff, 19) << 2;
+        return 0;
+    }
+
+    /* CBZ / CBNZ */
+    if (OPCODE(insn, 0x7e000000, 0x34000000)) {
+        o->op = ((insn>>24)&1) ? OP_CBNZ : OP_CBZ;
+        o->sf = (insn>>31)&1;
+        o->rd = insn & 0x1f;
+        o->imm = sext((insn>>5)&0x7ffff, 19) << 2;
+        return 0;
+    }
+
+    /* LDUR / STUR (unscaled immediate, integer, no writeback) */
+    if (OPCODE(insn, 0x3f200c00, 0x38000000)) {
+        uint8_t opc  = (insn>>22)&3;
+        uint8_t size = (insn>>30)&3;
+        if (opc == 0)      o->op = OP_STUR;
+        else if (opc == 1) o->op = OP_LDUR;
+        else return -1;
+        o->shift = size;
+        o->imm = sext((insn>>12)&0x1ff, 9);
+        o->rn = (insn>>5)&0x1f; o->rd = insn&0x1f;
+        return 0;
     }
 
     /* RET / BR */

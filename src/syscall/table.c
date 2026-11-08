@@ -2,12 +2,15 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <sys/syscall.h>
+#include <errno.h>
 #include <stdint.h>
 
 struct syscall_map { uint16_t guest_nr, host_nr; };
 
 static const struct syscall_map syscall_map[] = {
     /* aarch64 -> x86_64 */
+    { 56, 257 },  /* openat       */
+    { 62,   8 },  /* lseek        */
     { 63,   0 },  /* read         */
     { 64,   1 },  /* write        */
     { 57,   3 },  /* close        */
@@ -40,8 +43,9 @@ int syscall_dispatch(struct guest_cpu *cpu) {
             long ret = host_syscall6(syscall_map[i].host_nr,
                 (long)cpu->x[0], (long)cpu->x[1], (long)cpu->x[2],
                 (long)cpu->x[3], (long)cpu->x[4], (long)cpu->x[5]);
-            fprintf(stderr, "atld: svc %llu -> host %u ret=%ld\n",
-                    (unsigned long long)nr, syscall_map[i].host_nr, ret);
+            fprintf(stderr, "atld: svc %llu -> host %u ret=%ld errno=%d\n",
+                    (unsigned long long)nr, syscall_map[i].host_nr, ret,
+                    ret < 0 ? errno : 0);
             cpu->x[0] = (uint64_t)ret;
             return 0;
         }
