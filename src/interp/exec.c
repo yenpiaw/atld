@@ -191,6 +191,94 @@ int interp_step(struct guest_cpu *cpu) {
         next_pc = getr(cpu, d.rn);
         break;
 
+    case OP_SDIV:
+    case OP_UDIV: {
+        uint64_t a = getr(cpu, d.rn), b = getr(cpu, d.rm);
+        uint64_t r;
+        if (!d.sf) { a = (uint64_t)(int64_t)(int32_t)a; b = (uint64_t)(int64_t)(int32_t)b; }
+        if (b == 0) r = 0;
+        else if (d.op == OP_SDIV) r = (uint64_t)((int64_t)a / (int64_t)b);
+        else r = a / b;
+        setr(cpu, d.rd, apply_sf(r, d.sf));
+        break;
+    }
+    case OP_LSL_IMM:
+        setr(cpu, d.rd, apply_sf(getr(cpu, d.rn) << d.imm, d.sf));
+        break;
+    case OP_LSR_IMM: {
+        uint64_t v = getr(cpu, d.rn);
+        if (!d.sf) v &= 0xffffffffULL;
+        setr(cpu, d.rd, apply_sf(v >> d.imm, d.sf));
+        break;
+    }
+    case OP_ASR_IMM: {
+        int64_t v = d.sf ? (int64_t)getr(cpu, d.rn)
+                         : (int64_t)(int32_t)(uint32_t)getr(cpu, d.rn);
+        setr(cpu, d.rd, apply_sf((uint64_t)(v >> d.imm), d.sf));
+        break;
+    }
+    case OP_AND_IMM:
+    case OP_ORR_IMM:
+    case OP_EOR_IMM: {
+        uint64_t v = getr(cpu, d.rn);
+        uint64_t imm = (uint64_t)d.imm;
+        uint64_t r = (d.op == OP_AND_IMM) ? (v & imm) :
+                     (d.op == OP_ORR_IMM) ? (v | imm) : (v ^ imm);
+        setr(cpu, d.rd, apply_sf(r, d.sf));
+        break;
+    }
+    case OP_SXTW:
+        setr(cpu, d.rd, (uint64_t)(int64_t)(int32_t)(uint32_t)getr(cpu, d.rn));
+        break;
+    case OP_SXTB: {
+        uint64_t v = getr(cpu, d.rn);
+        setr(cpu, d.rd, apply_sf((uint64_t)(int64_t)(int8_t)(uint8_t)v, d.sf));
+        break;
+    }
+    case OP_SXTH: {
+        uint64_t v = getr(cpu, d.rn);
+        setr(cpu, d.rd, apply_sf((uint64_t)(int64_t)(int16_t)(uint16_t)v, d.sf));
+        break;
+    }
+    case OP_SMULL: {
+        int64_t a = (int64_t)(int32_t)getr(cpu, d.rn);
+        int64_t b = (int64_t)(int32_t)getr(cpu, d.rm);
+        setr(cpu, d.rd, (uint64_t)(a * b));
+        break;
+    }
+    case OP_LDR_REG:
+    case OP_STR_REG: {
+        uint64_t base = (d.rn == 31) ? cpu->sp : getr(cpu, d.rn);
+        uint64_t addr = base + getr(cpu, d.rm);
+        uint8_t sz = d.shift;
+        if (d.op == OP_STR_REG) {
+            uint64_t v = getr(cpu, d.rd);
+            switch (sz) {
+            case 0: *(uint8_t *)addr  = (uint8_t)v;  break;
+            case 1: *(uint16_t *)addr = (uint16_t)v; break;
+            case 2: *(uint32_t *)addr = (uint32_t)v; break;
+            case 3: *(uint64_t *)addr = v;            break;
+            }
+        } else {
+            uint64_t v = 0;
+            switch (sz) {
+            case 0: v = *(uint8_t *)addr;  break;
+            case 1: v = *(uint16_t *)addr; break;
+            case 2: v = *(uint32_t *)addr; break;
+            case 3: v = *(uint64_t *)addr; break;
+            }
+            setr(cpu, d.rd, v);
+        }
+        break;
+    }
+    case OP_LDRSW_IMM: {
+        uint64_t base = (d.rn == 31) ? cpu->sp : getr(cpu, d.rn);
+        uint64_t addr = base + ((uint64_t)d.imm12 << 2);
+        int32_t v = *(int32_t *)addr;
+        setr(cpu, d.rd, (uint64_t)(int64_t)v);
+        break;
+    }
+
     case OP_SVC:
         if (syscall_dispatch(cpu) != 0) return -1;
         break;
