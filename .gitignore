@@ -3,3 +3,4 @@ build/
 *.o.d
 core
 core.*
+tests/arm64/*_arm64
