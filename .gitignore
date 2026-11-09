@@ -4,3 +4,7 @@ build/
 core
 core.*
 tests/arm64/*_arm64
+
+# glibc test binaries (regenerate from .c)
+tests/glibc/glibc_write
+tests/glibc/t2

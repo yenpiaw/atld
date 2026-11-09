@@ -114,19 +114,8 @@ int elf_load(const char *path, struct guest_cpu *cpu) {
 
         /* Copy .tdata from mapped PT_LOAD area (same address as file vaddr) */
         if (tls_tdata_filesz > 0) {
-            fprintf(stderr, "atld: DBG tdata vaddr=0x%llx filesz=0x%llx TCB_SIZE=0x%llx\n",
-                    (unsigned long long)tls_tdata_vaddr,
-                    (unsigned long long)tls_tdata_filesz,
-                    (unsigned long long)TCB_SIZE);
-            fprintf(stderr, "atld: DBG src[0]=0x%016llx src[8]=0x%016llx\n",
-                    (unsigned long long)*(uint64_t *)tls_tdata_vaddr,
-                    (unsigned long long)*(uint64_t *)(tls_tdata_vaddr + 8));
             memcpy((void *)(tcb_addr + TCB_SIZE),
                    (void *)tls_tdata_vaddr, tls_tdata_filesz);
-            fprintf(stderr, "atld: DBG dst[0]=0x%016llx dst[8]=0x%016llx (at tcb+0x%llx)\n",
-                    (unsigned long long)*(uint64_t *)(tcb_addr + TCB_SIZE),
-                    (unsigned long long)*(uint64_t *)(tcb_addr + TCB_SIZE + 8),
-                    (unsigned long long)TCB_SIZE);
         }
 
         /* Initialize TCB header (aarch64 glibc tcbhead_t = 0x30 bytes):
@@ -146,18 +135,12 @@ int elf_load(const char *path, struct guest_cpu *cpu) {
         tcb[5] = 0xDEADBEEFCAFEBABEULL;
 
         cpu->tls_base = tcb_addr;
-        fprintf(stderr, "atld: TLS tcb=0x%llx tdata=0x%llx tbss=0x%llx align=0x%llx\n",
-                (unsigned long long)tcb_addr,
-                (unsigned long long)tls_tdata_filesz,
-                (unsigned long long)(tls_memsz - tls_tdata_filesz),
-                (unsigned long long)align);
     } else {
         /* No PT_TLS: dummy fallback */
         void *tls = mmap(NULL, 4096, PROT_READ|PROT_WRITE,
                          MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
         if (tls == MAP_FAILED) { perror("mmap tls"); munmap(fmap, fsize); return -1; }
         cpu->tls_base = (uint64_t)tls;
-        fprintf(stderr, "atld: TLS dummy (no PT_TLS)\n");
     }
 
     void *stack = mmap(NULL, 1 << 20, PROT_READ|PROT_WRITE,
