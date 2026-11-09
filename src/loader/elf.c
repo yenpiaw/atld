@@ -132,6 +132,7 @@ int elf_load(const char *path, struct guest_cpu *cpu) {
     /* Path 2: .rela.plt parser */
     reloc_plt_patch(eh, tpool);
 
+
     memset(cpu->x, 0, sizeof(cpu->x));
     memset(cpu->v, 0, sizeof(cpu->v));
     cpu->pc = eh->e_entry;
@@ -208,6 +209,28 @@ int elf_load(const char *path, struct guest_cpu *cpu) {
     cpu->sp = (uint64_t)&top[-6];
     fprintf(stderr, "atld: stack sp=0x%llx top=0x%llx (40-byte frame: argc/argv/envp/auxv)",
             (unsigned long long)cpu->sp, (unsigned long long)(uintptr_t)top);
+
+    /* M6.3 MVP2b: ATLD_MAIN bypass — set AFTER stack setup so cpu->sp valid. */
+    const char *atld_main_env = getenv("ATLD_MAIN");
+    if (atld_main_env && *atld_main_env) {
+        char *end = NULL;
+        errno = 0;
+        unsigned long long main_addr = strtoull(atld_main_env, &end, 0);
+        if (errno != 0 || end == atld_main_env || *end != '\0') {
+            fprintf(stderr, "atld: ATLD_MAIN='%s' invalid (use 0x...)\n",
+                    atld_main_env);
+        } else {
+            void *stub = tramp_pool_exit_stub(tpool);
+            cpu->x[0] = *(uint64_t *)cpu->sp;
+            cpu->x[1] = cpu->sp + 8;
+            cpu->x[2] = cpu->sp + 16;
+            cpu->x[30] = (uint64_t)stub;
+            cpu->pc = (uint64_t)main_addr;
+            fprintf(stderr, "atld: ATLD_MAIN=0x%llx -> jump to main, "
+                    "x30=exit_stub(0x%llx)\n",
+                    main_addr, (unsigned long long)stub);
+        }
+    }
 
     munmap(fmap, fsize);
     return 0;

@@ -83,12 +83,13 @@ void *tramp_pool_alloc(struct tramp_pool *pool, int idx) {
 
 void *tramp_pool_exit_stub(struct tramp_pool *pool) {
     if (!pool) return NULL;
-    /* Exit stub at slot THUNK_MAX (past last trampoline, still in page). */
+    /* Exit stub at slot THUNK_MAX (past last trampoline, still in page).
+     * Preserves x0 from main's return as exit code. */
     uint32_t *t = (uint32_t *)(pool->base + THUNK_MAX * 16);
     t[0] = 0xD2800BC8;   /* MOVZ x8, #94 (exit_group) */
-    t[1] = 0xD2800000;   /* MOVZ x0, #0 */
-    t[2] = 0xD4000001;   /* SVC #0 */
-    t[3] = 0xD65F03C0;   /* RET */
+    t[1] = 0xD4000001;   /* SVC #0 -> exit_group(x0 from main) */
+    t[2] = 0xD65F03C0;   /* RET (safety, not reached) */
+    t[3] = 0xD503201F;   /* NOP padding */
     __builtin___clear_cache((char *)t, (char *)t + 16);
     return t;
 }
