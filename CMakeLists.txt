@@ -8,6 +8,7 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 add_executable(atld
     src/main.c
     src/loader/elf.c
+    src/loader/reloc.c
     src/interp/decode.c
     src/interp/exec.c
     src/syscall/table.c

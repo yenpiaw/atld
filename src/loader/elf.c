@@ -1,4 +1,6 @@
 #include "atld/loader.h"
+#include "atld/reloc.h"
+#include "atld/thunk.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -93,50 +95,42 @@ int elf_load(const char *path, struct guest_cpu *cpu) {
                 (unsigned long long)vaddr, (unsigned long long)(vaddr + memsz), prot);
     }
 
-    /* === M6.3 trampoline: MVP for guest calling host via GOT ===
-     * MVP scope (not full .rela.plt parser):
-     *   - Allocate executable region, emit 3 ARM64 insns: MOVZ x8, SVC, RET
-     *   - Scan RW segments for magic 0xDEADBEEFDEADBEEF, patch to trampoline
-     * Verified via objdump: MOVZ x8, #0x1000, LSL#16 = 0xD2A02008 (not D2A00108).
-     * Trampoline loads x8 = THUNK_BASE + 0 = puts. Guest BLR -> SVC -> host. */
-    {
-        uint32_t *tramp = mmap(NULL, 4096,
-            PROT_READ | PROT_WRITE | PROT_EXEC,
-            MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-        if (tramp == MAP_FAILED) {
-            fprintf(stderr, "atld: trampoline mmap failed: %s\n", strerror(errno));
-            munmap(fmap, fsize); return -1;
-        }
-        tramp[0] = 0xD2A02008;  /* MOVZ x8, #0x1000, LSL #16 */
-        tramp[1] = 0xD4000001;  /* SVC #0 */
-        tramp[2] = 0xD65F03C0;  /* RET */
-        __builtin___clear_cache((char *)tramp, (char *)tramp + 16);
-        fprintf(stderr, "atld: trampoline at %p\n", (void *)tramp);
+    /* M6.3: trampoline pool + GOT patch.
+     * Two paths coexist:
+     *   (1) Magic-scan (MVP1): literal 0xDEADBEEFDEADBEEF in .data -> tramp
+     *   (2) .rela.plt parser (MVP2a): R_AARCH64_JUMP_SLOT -> named tramp */
+    struct tramp_pool *tpool = tramp_pool_create();
+    if (!tpool) { munmap(fmap, fsize); return -1; }
 
-        /* Scan RW PT_LOAD segments for magic and patch */
+    /* Path 1: magic scan (test_got.s uses this) */
+    {
         int patched = 0;
         for (int i = 0; i < eh->e_phnum; i++) {
             Elf64_Phdr *ph = (Elf64_Phdr *)((char *)fmap + eh->e_phoff
                                             + (size_t)i * eh->e_phentsize);
             if (ph->p_type != PT_LOAD) continue;
-            if (!(ph->p_flags & PF_W)) continue;   /* only writable segments */
+            if (!(ph->p_flags & PF_W)) continue;
 
             uint64_t vstart = ph->p_vaddr & ~0xFFFULL;
             uint64_t vend   = (ph->p_vaddr + ph->p_memsz + 0xFFF) & ~0xFFFULL;
             for (uint64_t a = vstart; a + 8 <= vend; a += 8) {
                 uint64_t *p = (uint64_t *)a;
                 if (*p == 0xDEADBEEFDEADBEEFULL) {
-                    *p = (uint64_t)tramp;
+                    /* Slot 0 trampoline (idx 0 = puts, hardcoded for MVP1) */
+                    *p = (uint64_t)tramp_pool_alloc(tpool, 0);
                     patched++;
-                    fprintf(stderr, "atld: GOT patch [0x%llx] -> tramp\n",
+                    fprintf(stderr, "atld: magic GOT patch [0x%llx] -> slot0\n",
                             (unsigned long long)a);
                 }
             }
         }
-        if (patched == 0) {
-            fprintf(stderr, "atld: no GOT magic found (0xDEADBEEFDEADBEEF)\n");
+        if (patched > 0) {
+            fprintf(stderr, "atld: %d magic GOT slots patched\n", patched);
         }
     }
+
+    /* Path 2: .rela.plt parser */
+    reloc_plt_patch(eh, tpool);
 
     memset(cpu->x, 0, sizeof(cpu->x));
     memset(cpu->v, 0, sizeof(cpu->v));
