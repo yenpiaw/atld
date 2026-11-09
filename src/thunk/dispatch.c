@@ -4,6 +4,7 @@
 #define ATLD_THUNK_HOST
 #include "atld/thunk.h"
 #include "atld/thunk_abi.h"
+#include "atld/callback.h"
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
@@ -11,7 +12,7 @@
 #include <sys/mman.h>
 #include <dlfcn.h>
 
-#define THUNK_STATIC_COUNT 7
+#define THUNK_STATIC_COUNT 9
 #define THUNK_MAX 256
 #define TRAMP_BYTES (THUNK_MAX * 16)
 #define TRAMP_PAGE_SIZE 8192
@@ -38,6 +39,8 @@ static struct thunk_entry thunks[THUNK_MAX] = {
     { "fma",            SIG_D3, NULL, NULL },
     { "__atld_test_d4", SIG_D4, NULL, (void*)&test_d4 },
     { "__atld_test_i6", SIG_I6, NULL, (void*)&test_i6 },
+    { "__atld_register_cb", SIG_I1, NULL, NULL },  /* special: (idx, fn) */
+    { "__atld_trigger_cb",  SIG_I1, NULL, NULL },  /* special: (idx, a, b) */
 };
 static int thunk_count = THUNK_STATIC_COUNT;
 
@@ -132,6 +135,19 @@ int thunk_dispatch(struct guest_cpu *cpu, unsigned long idx) {
         return 0;
     }
     struct thunk_entry *t = &thunks[idx];
+
+    /* M6.4: callback infra — special-case BEFORE dlsym (name is not a host symbol) */
+    if (strcmp(t->name, "__atld_register_cb") == 0) {
+        cb_register((int)cpu->x[0], cpu->x[1]);
+        cpu->x[0] = 0;
+        return 0;
+    }
+    if (strcmp(t->name, "__atld_trigger_cb") == 0) {
+        uint64_t args[2] = { cpu->x[1], cpu->x[2] };
+        uint64_t r = cb_invoke(cpu, (int)cpu->x[0], args, 2);
+        cpu->x[0] = r;
+        return 0;
+    }
 
     if (!t->fn) {
         if (t->builtin) {

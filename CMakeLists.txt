@@ -11,6 +11,7 @@ add_executable(atld
     src/loader/reloc.c
     src/interp/decode.c
     src/interp/exec.c
+    src/interp/callback.c
     src/syscall/table.c
     src/thunk/dispatch.c
 )

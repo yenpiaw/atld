@@ -28,3 +28,4 @@ tests/fix/test_sp_align
 tests/fix/test_smaddl_overflow
 tests/thunk/test_multiarg
 tests/thunk/test_got
+tests/thunk/test_callback

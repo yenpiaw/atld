@@ -10,6 +10,8 @@
 /* Test-only built-ins (no dlsym): verify multi-arg marshalling. */
 #define THUNK_TEST_D4   (THUNK_BASE + 5)
 #define THUNK_TEST_I6   (THUNK_BASE + 6)
+#define THUNK_REGISTER_CB (THUNK_BASE + 7)
+#define THUNK_TRIGGER_CB  (THUNK_BASE + 8)
 
 /* Signature classes — host only (guest hardcodes indices). */
 #ifdef ATLD_THUNK_HOST
