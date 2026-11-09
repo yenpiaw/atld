@@ -25,3 +25,4 @@ tests/thunk/cos_test
 tests/fix/test_udiv32
 tests/fix/test_errno
 tests/fix/test_sp_align
+tests/fix/test_smaddl_overflow

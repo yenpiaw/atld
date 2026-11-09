@@ -19,6 +19,8 @@ static uint64_t apply_sf(uint64_t v, uint8_t sf) {
 }
 static uint64_t shifted(uint64_t v, uint8_t kind, uint32_t amt, uint8_t sf) {
     if (!sf) v &= 0xffffffffULL;
+    /* ARM masks shift amount by register width. C shift by >= width is UB. */
+    amt &= sf ? 63u : 31u;
     switch (kind) {
     case 0: return v << amt;
     case 1: return v >> amt;
@@ -329,19 +331,23 @@ int interp_step(struct guest_cpu *cpu) {
         break;
     }
 
-    case OP_LSL_IMM:
-        setr(cpu, d.rd, apply_sf(getr(cpu, d.rn) << d.imm, d.sf));
+    case OP_LSL_IMM: {
+        uint32_t sh = (uint32_t)d.imm & (d.sf ? 63u : 31u);
+        setr(cpu, d.rd, apply_sf(getr(cpu, d.rn) << sh, d.sf));
         break;
+    }
     case OP_LSR_IMM: {
         uint64_t v = getr(cpu, d.rn);
         if (!d.sf) v &= 0xffffffffULL;
-        setr(cpu, d.rd, apply_sf(v >> d.imm, d.sf));
+        uint32_t sh = (uint32_t)d.imm & (d.sf ? 63u : 31u);
+        setr(cpu, d.rd, apply_sf(v >> sh, d.sf));
         break;
     }
     case OP_ASR_IMM: {
         int64_t v = d.sf ? (int64_t)getr(cpu, d.rn)
                          : (int64_t)(int32_t)(uint32_t)getr(cpu, d.rn);
-        setr(cpu, d.rd, apply_sf((uint64_t)(v >> d.imm), d.sf));
+        uint32_t sh = (uint32_t)d.imm & (d.sf ? 63u : 31u);
+        setr(cpu, d.rd, apply_sf((uint64_t)(v >> sh), d.sf));
         break;
     }
     case OP_AND_IMM:
@@ -605,7 +611,10 @@ int interp_step(struct guest_cpu *cpu) {
         int64_t a = (int64_t)(int32_t)(uint32_t)getr(cpu, d.rn);
         int64_t b = (int64_t)(int32_t)(uint32_t)getr(cpu, d.rm);
         int64_t c = (int64_t)getr(cpu, (int)d.imm);
-        setr(cpu, d.rd, (uint64_t)(a * b + c));
+        /* a*b + c in int64 overflows (UB in C) for c near INT64_MAX.
+         * ARM ARM: result is modular. Use __int128 to avoid UB. */
+        __int128 r = (__int128)a * (__int128)b + (__int128)c;
+        setr(cpu, d.rd, (uint64_t)r);
         break;
     }
     case OP_UMADDL: {
@@ -684,7 +693,7 @@ int interp_step(struct guest_cpu *cpu) {
         break;
     }
     case OP_EXTR: {
-        int lsb = (int)d.imm;
+        int lsb = (int)d.imm & (d.sf ? 63 : 31);
         uint64_t n = getr(cpu, d.rn);
         uint64_t m = getr(cpu, d.rm);
         if (d.sf) {
