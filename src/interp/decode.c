@@ -825,6 +825,15 @@ if (OPCODE(insn, 0xffc00000, 0x28c00000)) {
         o->op = OP_MSR; o->shift = 1; o->rd = insn&0x1f; return 0;
     }
 
+    /* FMOV Dd, #imm8 — scalar FP immediate (ARM ARM VFPExpandImm).
+     * Encoding: 0x1E601000 | (imm8 << 13) | Rd (double, ftype=10). */
+    if ((insn & 0xFFE01FE0) == 0x1E601000) {
+        o->op = OP_FMOV_D_IMM;
+        o->imm16 = (uint16_t)((insn >> 13) & 0xff);
+        o->rd = insn & 0x1f;
+        return 0;
+    }
+
     /* FP D-form (8-byte double) */
     if ((insn & 0xFFFFFFE0) == 0x2F00E400) {   /* MOVI Dd, #0 */
         o->op = OP_MOVI_D0;

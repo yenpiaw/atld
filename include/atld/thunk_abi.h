@@ -6,14 +6,22 @@
 #define THUNK_STRLEN    (THUNK_BASE + 1)
 #define THUNK_COS       (THUNK_BASE + 2)
 #define THUNK_POW       (THUNK_BASE + 3)
+#define THUNK_FMA       (THUNK_BASE + 4)
+/* Test-only built-ins (no dlsym): verify multi-arg marshalling. */
+#define THUNK_TEST_D4   (THUNK_BASE + 5)
+#define THUNK_TEST_I6   (THUNK_BASE + 6)
 
 /* Signature classes — host only (guest hardcodes indices). */
 #ifdef ATLD_THUNK_HOST
 enum thunk_sig {
-    SIG_I0,   /* int (void)                    — return x0 */
-    SIG_I1,   /* int (long)                    — arg x0, return x0 */
-    SIG_L1,   /* long (long)                   — arg x0, return x0 (64-bit) */
-    SIG_D1,   /* double (double)               — arg v0[0], return v0[0] */
-    SIG_D2,   /* double (double, double)       — arg v0[0], v1[0] */
+    SIG_I0,   /* int (void)                              */
+    SIG_I1,   /* int (long)                              */
+    SIG_L1,   /* long (long)                             */
+    SIG_I4,   /* int (long, long, long, long)            */
+    SIG_I6,   /* int (long×6)                            */
+    SIG_D1,   /* double (double)                         */
+    SIG_D2,   /* double (double, double)                 */
+    SIG_D3,   /* double (double, double, double)         */
+    SIG_D4,   /* double (double×4)                       */
 };
 #endif

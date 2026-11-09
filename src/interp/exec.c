@@ -2,6 +2,7 @@
 #include "atld/decode.h"
 #include "atld/syscall.h"
 #include <stdio.h>
+#include <string.h>
 
 static int64_t sext64(uint64_t v, int bits) {
     uint64_t m = 1ULL << (bits - 1);
@@ -735,6 +736,27 @@ int interp_step(struct guest_cpu *cpu) {
             if (mr == 0)        flags |= (1u<<30);
             cpu->pstate = flags;
         }
+        break;
+    }
+
+    case OP_FMOV_D_IMM: {
+        /* ARM ARM VFPExpandImm (double, N=64, E=11, F=52):
+         *   sign = imm8[7]
+         *   exp  = NOT(imm8[6]) : Replicate(imm8[6], 8) : imm8[5:4]
+         *   frac = imm8[3:0] : Zeros(48)
+         * Map to IEEE-754 double bits 63 / 62:52 / 51:48. */
+        uint32_t imm8 = d.imm16 & 0xff;
+        uint64_t bits = 0;
+        bits |= (uint64_t)((imm8 >> 7) & 1) << 63;
+        if (imm8 & 0x40) {
+            bits |= (uint64_t)0xFF << 54;
+        } else {
+            bits |= (uint64_t)1 << 62;
+        }
+        bits |= (uint64_t)((imm8 >> 4) & 0x3) << 52;
+        bits |= (uint64_t)(imm8 & 0xF) << 48;
+        memcpy(&cpu->v[d.rd][0], &bits, 8);
+        cpu->v[d.rd][1] = 0;
         break;
     }
 
