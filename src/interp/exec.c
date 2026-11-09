@@ -451,10 +451,14 @@ int interp_step(struct guest_cpu *cpu) {
         default: ext = 0;
         }
         ext <<= (uint32_t)d.imm;
-        uint64_t rn = getr(cpu, d.rn);
+        /* ARM ARM C6.2.4: extended-register form, Rn=31 -> SP (not XZR).
+         * Common forms: add sp, sp, xN (VLA/alloca), sub xN, sp, xM. */
+        uint64_t rn = (d.rn == 31) ? cpu->sp : getr(cpu, d.rn);
         if (!d.sf) rn &= 0xffffffffULL;
         uint64_t r = (d.op == OP_ADD_EXT) ? (rn + ext) : (rn - ext);
-        setr(cpu, d.rd, apply_sf(r, d.sf));
+        r = apply_sf(r, d.sf);
+        /* Rd=31 -> SP (writeback to stack pointer). */
+        if (d.rd == 31) cpu->sp = r; else setr(cpu, d.rd, r);
         break;
     }
     case OP_LDR_PRE:
@@ -915,7 +919,9 @@ int interp_step(struct guest_cpu *cpu) {
 
     case OP_ADDS_IMM:
     case OP_SUBS_IMM: {
-        uint64_t rn  = getr(cpu, d.rn);
+        /* ARM ARM C6.2.9: immediate form, Rn=31 -> SP (CMP SP, #imm).
+         * Rd=31 stays ZR (CMP alias), so RD check below is correct. */
+        uint64_t rn  = (d.rn == 31) ? cpu->sp : getr(cpu, d.rn);
         uint64_t imm = (uint64_t)d.imm12;
         if (d.shift) imm <<= 12;
         uint64_t r = (d.op == OP_ADDS_IMM) ? (rn + imm) : (rn - imm);

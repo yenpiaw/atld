@@ -25,5 +25,6 @@ enum thunk_sig {
     SIG_D2,   /* double (double, double)                 */
     SIG_D3,   /* double (double, double, double)         */
     SIG_D4,   /* double (double×4)                       */
+    SIG_UNRESOLVED,  /* unknown symbol — return -ENOSYS, never call */
 };
 #endif

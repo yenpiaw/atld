@@ -1,6 +1,7 @@
 /* M6.4: callback host->guest. Host can invoke a guest function via
  * interp_step_until_pc, with proper AAPCS64 argument setup and return. */
 #include "atld/callback.h"
+#include <stdio.h>
 #include "atld/interp.h"
 
 static uint64_t g_cbs[CB_MAX] = {0};
@@ -11,9 +12,19 @@ int cb_register(int idx, uint64_t fn_ptr) {
     return 0;
 }
 
+#define CB_MAX_STEPS 100000000ULL  /* 100M — safety net against hang */
+
 int interp_step_until_pc(struct guest_cpu *cpu, uint64_t stop_pc) {
+    uint64_t steps = 0;
     while (cpu->pc != stop_pc) {
         if (interp_step(cpu) != 0) return -1;
+        if (++steps > CB_MAX_STEPS) {
+            fprintf(stderr, "atld: cb timeout after %llu steps (pc=0x%llx, stop=0x%llx)\n",
+                    (unsigned long long)steps,
+                    (unsigned long long)cpu->pc,
+                    (unsigned long long)stop_pc);
+            return -1;
+        }
     }
     return 0;
 }

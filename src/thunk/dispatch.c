@@ -12,7 +12,7 @@
 #include <sys/mman.h>
 #include <dlfcn.h>
 
-#define THUNK_STATIC_COUNT 9
+#define THUNK_STATIC_COUNT 11
 #define THUNK_MAX 256
 #define TRAMP_BYTES (THUNK_MAX * 16)
 #define TRAMP_PAGE_SIZE 8192
@@ -41,6 +41,8 @@ static struct thunk_entry thunks[THUNK_MAX] = {
     { "__atld_test_i6", SIG_I6, NULL, (void*)&test_i6 },
     { "__atld_register_cb", SIG_I1, NULL, NULL },  /* special: (idx, fn) */
     { "__atld_trigger_cb",  SIG_I1, NULL, NULL },  /* special: (idx, a, b) */
+    { "abort", SIG_I0, NULL, NULL },  /* host abort() -> SIGABRT -> dies */
+    { "exit",  SIG_I1, NULL, NULL },  /* host exit(code) -> dies */
 };
 static int thunk_count = THUNK_STATIC_COUNT;
 
@@ -110,10 +112,12 @@ int thunk_register(const char *name) {
     thunks[idx].fn      = NULL;
     thunks[idx].builtin = NULL;
 
-    /* Infer sig: default to SIG_I1 (1 int arg, int return).
-     * Real functions need explicit sig — this is MVP heuristic.
-     * Better: caller passes sig, or we parse name patterns. */
-    thunks[idx].sig = SIG_I1;
+    /* Unknown symbols MUST NOT default to SIG_I1 — that would call the
+     * host function with wrong signature and silently truncate return
+     * (e.g. malloc returns void*, truncated to int = corrupt pointer).
+     * Instead, mark SIG_UNRESOLVED: dispatch returns -ENOSYS, guest can
+     * handle gracefully. Real sig must be added to the static table. */
+    thunks[idx].sig = SIG_UNRESOLVED;
 
     fprintf(stderr, "atld: thunk_register '%s' -> idx %d (sig %d)\n",
             name, idx, thunks[idx].sig);
@@ -149,6 +153,12 @@ int thunk_dispatch(struct guest_cpu *cpu, unsigned long idx) {
         return 0;
     }
 
+    if (t->sig == SIG_UNRESOLVED) {
+        fprintf(stderr, "atld: UNRESOLVED thunk '%s' (idx %lu) -> -ENOSYS\n",
+                t->name, idx);
+        cpu->x[0] = (uint64_t)(-38);
+        return 0;
+    }
     if (!t->fn) {
         if (t->builtin) {
             t->fn = t->builtin;
@@ -180,6 +190,11 @@ int thunk_dispatch(struct guest_cpu *cpu, unsigned long idx) {
     case SIG_D2: v_set(cpu, 0, ((double(*)(double,double))t->fn)(v_get(cpu,0), v_get(cpu,1))); break;
     case SIG_D3: v_set(cpu, 0, ((double(*)(double,double,double))t->fn)(v_get(cpu,0), v_get(cpu,1), v_get(cpu,2))); break;
     case SIG_D4: v_set(cpu, 0, ((double(*)(double,double,double,double))t->fn)(v_get(cpu,0), v_get(cpu,1), v_get(cpu,2), v_get(cpu,3))); break;
+    case SIG_UNRESOLVED:
+        /* reached only if short-circuit above is removed */
+        fprintf(stderr, "atld: UNRESOLVED '%s'\n", t->name);
+        cpu->x[0] = (uint64_t)(-38);
+        break;
     default:
         fprintf(stderr, "atld: thunk '%s' unsupported sig %d\n", t->name, t->sig);
         cpu->x[0] = (uint64_t)(-38);
