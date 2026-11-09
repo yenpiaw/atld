@@ -825,6 +825,31 @@ if (OPCODE(insn, 0xffc00000, 0x28c00000)) {
         o->op = OP_MSR; o->shift = 1; o->rd = insn&0x1f; return 0;
     }
 
+    /* FP D-form (8-byte double) */
+    if ((insn & 0xFFFFFFE0) == 0x2F00E400) {   /* MOVI Dd, #0 */
+        o->op = OP_MOVI_D0;
+        o->rd = insn & 0x1f;
+        return 0;
+    }
+    if (OPCODE(insn, 0xFFC00000, 0xFD000000)) { /* STR Dd, [Xn, #imm12*8] */
+        o->op = OP_STR_D_IMM;
+        o->imm12 = (insn>>10)&0xfff;
+        o->rn = (insn>>5)&0x1f; o->rd = insn&0x1f;
+        return 0;
+    }
+    if (OPCODE(insn, 0xFFC00000, 0xFD400000)) { /* LDR Dd, [Xn, #imm12*8] */
+        o->op = OP_LDR_D_IMM;
+        o->imm12 = (insn>>10)&0xfff;
+        o->rn = (insn>>5)&0x1f; o->rd = insn&0x1f;
+        return 0;
+    }
+    if (OPCODE(insn, 0xFFE0FC00, 0x1E604000)) { /* FMOV Dd, Dm */
+        o->op = OP_FMOV_D;
+        o->rm = (insn>>16)&0x1f;
+        o->rd = insn&0x1f;
+        return 0;
+    }
+
     o->op = OP_UNKNOWN;
     return -1;
 }

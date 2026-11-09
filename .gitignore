@@ -18,3 +18,5 @@ tests/stress/mem
 
 # thunk test binaries
 tests/thunk/hello_puts
+tests/thunk/strlen_test
+tests/thunk/cos_test

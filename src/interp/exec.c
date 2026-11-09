@@ -716,6 +716,28 @@ int interp_step(struct guest_cpu *cpu) {
         break;
     }
 
+    case OP_MOVI_D0:
+        cpu->v[d.rd][0] = 0;
+        cpu->v[d.rd][1] = 0;
+        break;
+    case OP_STR_D_IMM: {
+        uint64_t base = (d.rn == 31) ? cpu->sp : getr(cpu, d.rn);
+        uint64_t addr = base + ((uint64_t)d.imm12 << 3);
+        *(uint64_t *)addr = cpu->v[d.rd][0];
+        break;
+    }
+    case OP_LDR_D_IMM: {
+        uint64_t base = (d.rn == 31) ? cpu->sp : getr(cpu, d.rn);
+        uint64_t addr = base + ((uint64_t)d.imm12 << 3);
+        cpu->v[d.rd][0] = *(uint64_t *)addr;
+        cpu->v[d.rd][1] = 0;
+        break;
+    }
+    case OP_FMOV_D:
+        cpu->v[d.rd][0] = cpu->v[d.rm][0];
+        cpu->v[d.rd][1] = 0;
+        break;
+
     /* === SIMD minimal === */
     case OP_DUP_B16: {
         uint8_t b = (uint8_t)getr(cpu, d.rn);

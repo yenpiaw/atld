@@ -15,5 +15,6 @@ add_executable(atld
 )
 
 target_include_directories(atld PRIVATE include)
+target_link_libraries(atld PRIVATE m dl)
 target_compile_options(atld PRIVATE -Wall -Wextra -Wno-unused-parameter -g -O0)
 target_link_options(atld PRIVATE -pie)
