@@ -30,3 +30,4 @@ tests/thunk/test_multiarg
 tests/thunk/test_got
 tests/thunk/test_callback
 tests/fix/test_sp_reg
+tests/thunk/test_scale

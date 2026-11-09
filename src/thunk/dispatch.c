@@ -12,7 +12,7 @@
 #include <sys/mman.h>
 #include <dlfcn.h>
 
-#define THUNK_STATIC_COUNT 11
+#define THUNK_STATIC_COUNT 13
 #define THUNK_MAX 256
 #define TRAMP_BYTES (THUNK_MAX * 16)
 #define TRAMP_PAGE_SIZE 8192
@@ -43,6 +43,8 @@ static struct thunk_entry thunks[THUNK_MAX] = {
     { "__atld_trigger_cb",  SIG_I1, NULL, NULL },  /* special: (idx, a, b) */
     { "abort", SIG_I0, NULL, NULL },  /* host abort() -> SIGABRT -> dies */
     { "exit",  SIG_I1, NULL, NULL },  /* host exit(code) -> dies */
+    { "malloc", SIG_L1, NULL, NULL },  /* void* malloc(size_t) — long ret OK */
+    { "free",   SIG_I1, NULL, NULL },  /* void free(void*) — ret ignored */
 };
 static int thunk_count = THUNK_STATIC_COUNT;
 
