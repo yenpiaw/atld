@@ -446,7 +446,23 @@ if (OPCODE(insn, 0xffc00000, 0x28c00000)) {
             o->op = OP_ASR_IMM; o->sf = sf; o->imm = immr;
             o->rn = rn; o->rd = rd; return 0;
         }
-        return -1;
+        /* Fall through to general SBFM (SBFX/SBFIZ) */
+        o->op = OP_SBFM; o->sf = sf;
+        o->imm = immr; o->imm16 = imms;
+        o->rn = rn; o->rd = rd;
+        return 0;
+    }
+
+    /* BFM (BitField Move) — BFI/BFXIL base. Encoding: opc=01, 0x33... */
+    if (OPCODE(insn, 0x7F800000, 0x33000000)) {
+        int sf = (insn>>31)&1, N = (insn>>22)&1;
+        int immr = (insn>>16)&0x3f, imms = (insn>>10)&0x3f;
+        if (N != sf) return -1;
+        o->op = OP_BFM; o->sf = sf;
+        o->imm = immr; o->imm16 = imms;
+        o->rn = (insn>>5)&0x1f;
+        o->rd = insn & 0x1f;
+        return 0;
     }
 
     /* AND/ORR/EOR immediate (bitmask) */
@@ -478,17 +494,24 @@ if (OPCODE(insn, 0xffc00000, 0x28c00000)) {
     /* LDR/STR register offset (byte/half/word/dword) */
     {
         int sz = -1, is_load = 0;
-        if      (OPCODE(insn, 0xFFE0FC00, 0x38206800)) { sz = 0; is_load = 0; }
-        else if (OPCODE(insn, 0xFFE0FC00, 0x38606800)) { sz = 0; is_load = 1; }
-        else if (OPCODE(insn, 0xFFE0FC00, 0x78206800)) { sz = 1; is_load = 0; }
-        else if (OPCODE(insn, 0xFFE0FC00, 0x78606800)) { sz = 1; is_load = 1; }
-        else if (OPCODE(insn, 0xFFE0FC00, 0xB8206800)) { sz = 2; is_load = 0; }
-        else if (OPCODE(insn, 0xFFE0FC00, 0xB8606800)) { sz = 2; is_load = 1; }
-        else if (OPCODE(insn, 0xFFE0FC00, 0xF8206800)) { sz = 3; is_load = 0; }
-        else if (OPCODE(insn, 0xFFE0FC00, 0xF8606800)) { sz = 3; is_load = 1; }
+        if      (OPCODE(insn, 0xFFE0EC00, 0x38206800)) { sz = 0; is_load = 0; }
+        else if (OPCODE(insn, 0xFFE0EC00, 0x38606800)) { sz = 0; is_load = 1; }
+        else if (OPCODE(insn, 0xFFE0EC00, 0x78206800)) { sz = 1; is_load = 0; }
+        else if (OPCODE(insn, 0xFFE0EC00, 0x78606800)) { sz = 1; is_load = 1; }
+        else if (OPCODE(insn, 0xFFE0EC00, 0xB8206800)) { sz = 2; is_load = 0; }
+        else if (OPCODE(insn, 0xFFE0EC00, 0xB8606800)) { sz = 2; is_load = 1; }
+        else if (OPCODE(insn, 0xFFE0EC00, 0xF8206800)) { sz = 3; is_load = 0; }
+        else if (OPCODE(insn, 0xFFE0EC00, 0xF8606800)) { sz = 3; is_load = 1; }
+        /* LDRSB/LDRSH (32/64-bit dest) + LDRSW register offset */
+        else if (OPCODE(insn, 0xFFE0EC00, 0x38A06800)) { sz = 0; is_load = 2; }  /* LDRSB W */
+        else if (OPCODE(insn, 0xFFE0EC00, 0x38E06800)) { sz = 0; is_load = 3; }  /* LDRSB X */
+        else if (OPCODE(insn, 0xFFE0EC00, 0x78A06800)) { sz = 1; is_load = 2; }  /* LDRSH W */
+        else if (OPCODE(insn, 0xFFE0EC00, 0x78E06800)) { sz = 1; is_load = 3; }  /* LDRSH X */
+        else if (OPCODE(insn, 0xFFE0EC00, 0xB8A06800)) { sz = 2; is_load = 3; }  /* LDRSW X (64-bit) */
         if (sz >= 0) {
-            o->op = is_load ? OP_LDR_REG : OP_STR_REG;
+            o->op = (is_load >= 1) ? OP_LDR_REG : OP_STR_REG;
             o->shift = sz;
+            o->hw = (uint16_t)(is_load >= 2 ? is_load : 0);  /* 2=sign32, 3=sign64 */
             o->rm = (insn>>16)&0x1f;
             o->rn = (insn>>5)&0x1f;
             o->rd = insn&0x1f;

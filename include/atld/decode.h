@@ -10,7 +10,7 @@ enum op_kind {
     OP_ADDS_REG, OP_SUBS_REG,
     OP_CSEL, OP_CSINC, OP_CSINV, OP_CSNEG,
     OP_TBZ, OP_TBNZ,
-    OP_UBFM,
+    OP_UBFM, OP_SBFM, OP_BFM,
     OP_MOVI_4S,
     OP_LDR_BH, OP_STR_BH,
     OP_STP_Q, OP_LDP_Q,

@@ -221,6 +221,77 @@ int interp_step(struct guest_cpu *cpu) {
         setr(cpu, d.rd, apply_sf(r, d.sf));
         break;
     }
+    case OP_SBFM: {
+        int datasize = d.sf ? 64 : 32;
+        uint64_t src = getr(cpu, d.rn);
+        if (datasize == 32) src &= 0xFFFFFFFF;
+        int R = (int)d.imm;
+        int S = (int)d.imm16;
+        uint64_t result;
+        if (R <= S) {
+            /* SBFX: extract (S-R+1) bits from R, sign-extend */
+            int width = S - R + 1;
+            uint64_t mask = (width >= 64) ? ~0ULL : ((1ULL << width) - 1);
+            uint64_t extracted = (src >> R) & mask;
+            int sign = (extracted >> (width - 1)) & 1;
+            if (sign) {
+                if (width < 64) {
+                    uint64_t sign_ext = ~mask;
+                    result = extracted | sign_ext;
+                } else {
+                    result = extracted;
+                }
+            } else {
+                result = extracted;
+            }
+        } else {
+            /* SBFIZ: sign-extend low (S+1) bits, shift left (datasize-R) */
+            int width = S + 1;
+            int lsb = (datasize - R) & (datasize - 1);
+            uint64_t mask = (width >= 64) ? ~0ULL : ((1ULL << width) - 1);
+            uint64_t extracted = src & mask;
+            /* sign-extend */
+            int sign = (extracted >> (width - 1)) & 1;
+            if (sign) {
+                if (width < 64) result = extracted | ~mask;
+                else result = extracted;
+            } else {
+                result = extracted;
+            }
+            result <<= lsb;
+        }
+        if (datasize == 32) result &= 0xFFFFFFFF;
+        setr(cpu, d.rd, result);
+        break;
+    }
+
+    case OP_BFM: {
+        int datasize = d.sf ? 64 : 32;
+        uint64_t src_val = getr(cpu, d.rn);
+        uint64_t dst_val = getr(cpu, d.rd);
+        if (datasize == 32) { src_val &= 0xFFFFFFFF; dst_val &= 0xFFFFFFFF; }
+        int R = (int)d.imm;
+        int S = (int)d.imm16;
+        uint64_t result;
+        if (S >= R) {
+            /* BFXIL: extract (S-R+1) bits from src starting at R, insert at dst low */
+            int width = S - R + 1;
+            uint64_t mask = (width >= 64) ? ~0ULL : ((1ULL << width) - 1);
+            uint64_t extracted = (src_val >> R) & mask;
+            result = (dst_val & ~mask) | (extracted & mask);
+        } else {
+            /* BFI: insert (S+1) bits from src low at position (datasize - R) in dst */
+            int width = S + 1;
+            int lsb = (datasize - R) & (datasize - 1);
+            uint64_t mask = (width >= 64) ? ~0ULL : ((1ULL << width) - 1);
+            uint64_t extracted = src_val & mask;
+            result = (dst_val & ~(mask << lsb)) | ((extracted & mask) << lsb);
+        }
+        if (datasize == 32) result &= 0xFFFFFFFF;
+        setr(cpu, d.rd, result);
+        break;
+    }
+
     case OP_UBFM: {
         int datasize = d.sf ? 64 : 32;
         uint64_t src = getr(cpu, d.rn);
@@ -292,8 +363,12 @@ int interp_step(struct guest_cpu *cpu) {
     case OP_LDR_REG:
     case OP_STR_REG: {
         uint64_t base = (d.rn == 31) ? cpu->sp : getr(cpu, d.rn);
-        uint64_t addr = base + getr(cpu, d.rm);
+        uint64_t rm_val = getr(cpu, d.rm);
+        /* S bit (bit 12) = apply LSL shift by size */
+        if ((d.raw >> 12) & 1) rm_val <<= d.shift;
+        uint64_t addr = base + rm_val;
         uint8_t sz = d.shift;
+        uint8_t hw = d.hw;  /* 0=zero-ext, 2=sign32, 3=sign64 */
         if (d.op == OP_STR_REG) {
             uint64_t v = getr(cpu, d.rd);
             switch (sz) {
@@ -304,11 +379,29 @@ int interp_step(struct guest_cpu *cpu) {
             }
         } else {
             uint64_t v = 0;
-            switch (sz) {
-            case 0: v = *(uint8_t *)addr;  break;
-            case 1: v = *(uint16_t *)addr; break;
-            case 2: v = *(uint32_t *)addr; break;
-            case 3: v = *(uint64_t *)addr; break;
+            if (hw == 2) {
+                /* LDRS* to 32-bit */
+                switch (sz) {
+                case 0: v = (uint64_t)(uint32_t)(int32_t)(int8_t)*(uint8_t *)addr; break;
+                case 1: v = (uint64_t)(uint32_t)(int32_t)(int16_t)*(uint16_t *)addr; break;
+                case 2: v = (uint64_t)(uint32_t)(int32_t)*(int32_t *)addr; break;
+                default: v = *(uint32_t *)addr;
+                }
+            } else if (hw == 3) {
+                /* LDRS* to 64-bit */
+                switch (sz) {
+                case 0: v = (uint64_t)(int64_t)(int8_t)*(uint8_t *)addr; break;
+                case 1: v = (uint64_t)(int64_t)(int16_t)*(uint16_t *)addr; break;
+                case 2: v = (uint64_t)(int64_t)*(int32_t *)addr; break;
+                default: v = *(uint64_t *)addr;
+                }
+            } else {
+                switch (sz) {
+                case 0: v = *(uint8_t *)addr;  break;
+                case 1: v = *(uint16_t *)addr; break;
+                case 2: v = *(uint32_t *)addr; break;
+                case 3: v = *(uint64_t *)addr; break;
+                }
             }
             setr(cpu, d.rd, v);
         }
