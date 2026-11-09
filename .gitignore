@@ -15,3 +15,6 @@ tests/stress/bitfield
 tests/stress/bitops
 tests/stress/cond
 tests/stress/mem
+
+# thunk test binaries
+tests/thunk/hello_puts

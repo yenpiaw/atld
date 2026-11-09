@@ -1,4 +1,5 @@
 #include "atld/syscall.h"
+#include "atld/thunk.h"
 #include <stdio.h>
 #include <unistd.h>
 #include <sys/syscall.h>
@@ -37,6 +38,14 @@ int syscall_dispatch(struct guest_cpu *cpu) {
         (unsigned long long)cpu->x[1],
         (unsigned long long)cpu->x[2],
         (unsigned long long)cpu->x[3]);
+    /* Thunk namespace: x8 >= 0x1000000 -> host function call (M6).
+     * aarch64 syscall numbers max ~450, so 0x1000000 is safely above.
+     * Guest sends THUNK_BASE + idx; idx (0-based) passed to dispatcher. */
+    #define THUNK_BASE 0x1000000UL
+    if (nr >= THUNK_BASE) {
+        return thunk_dispatch(cpu, (unsigned long)(nr - THUNK_BASE));
+    }
+
     /* set_robust_list: 32-bit aarch64 has no host equivalent — fake success.
      * glibc doesn't check return value; robust futexes won't work but that
      * matches QEMU's workaround. */
@@ -47,7 +56,10 @@ int syscall_dispatch(struct guest_cpu *cpu) {
     for (size_t i = 0; i < sizeof(syscall_map)/sizeof(syscall_map[0]); i++) {
         if (syscall_map[i].guest_nr == nr) {
             if (nr == 94 || nr == 93) {  /* exit_group / exit */
-                fflush(stderr);
+                /* _exit() skips atexit + stdio flush. Guest's puts()
+                 * (or any host thunk that wrote to stdout/stderr) leaves
+                 * data in glibc buffers. fflush(NULL) flushes all. */
+                fflush(NULL);
                 _exit((int)cpu->x[0]);
             }
             long ret = host_syscall6(syscall_map[i].host_nr,

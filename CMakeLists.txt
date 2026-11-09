@@ -11,6 +11,7 @@ add_executable(atld
     src/interp/decode.c
     src/interp/exec.c
     src/syscall/table.c
+    src/thunk/dispatch.c
 )
 
 target_include_directories(atld PRIVATE include)
