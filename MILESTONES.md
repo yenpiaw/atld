@@ -18,6 +18,7 @@ Komponen ISA opsional untuk ATL (Android Translation Layer) — bukan ATL itu se
 | `v0.4-general` | Decoder 60+ instruksi + loader TLS/stack ABI (dari glibc work, tanpa glibc baggage) | regresi 3 test hijau |
 | `v0.5-stress` | Stress test 5 kategori decoder | `tests/run-stress.sh` **5/5 PASS** |
 | `m6-mvp` | Thunk dispatch — guest panggil host function | `tests/thunk/hello_puts` → `hello from host puts` |
+| `m6-phase2` | Generic thunk via dlsym + FP args | `tests/thunk/cos_test` → `cos(0.0)=1.0 OK` |
 
 ---
 
@@ -154,7 +155,7 @@ bash tests/run-stress.sh
 6. Glibc bukan target ATL — jangan lanjut wip/glibc-write
 7. Null deref di glibc = bug loader, bukan decoder
 
-## Next: M6 Phase 2 (generic thunk)
+## Next: M6 Phase 3 (dynamic .so + callback)
 
 Phase 1 (MVP) selesai: hardcoded `puts` via `THUNK_BASE + idx`.
 
@@ -171,3 +172,18 @@ Phase 3 (setelah Phase 2):
 - Bionic shim ARM64 (`libc.so`, `libEGL.so`, `libvulkan.so`)
 
 Setelah M6 Phase 2: M4 (Bionic struct) + M3.6 (Bionic shim) terbuka.
+
+## M6 Phase 3 (next)
+
+Setelah Phase 2 (generic thunk + FP args) berjalan:
+
+1. **Dynamic .so loading** — guest `dlopen("libm.so")` → loader host resolve → thunk table otomatis
+   - Butuh `PT_INTERP` handling (Bionic linker)
+   - `DT_NEEDED` parsing
+   - `dlsym` di host + symbol table
+2. **Callback host → guest** — guest daftar fn pointer, host panggil balik
+   - Wajib untuk `eglSwapBuffers`, `pthread_create`, event callback
+   - Format: `thunk_register_callback(idx, fn_ptr)` + `interp_step_until_return(fn_ptr, args)`
+3. **Test**: `.so` ARM64 handwritten panggil `write` via `libc.so` yang di-`dlopen`
+
+Setelah Phase 3: Bionic shim ARM64 (M3.6) + ATL integration (M7) terbuka.
