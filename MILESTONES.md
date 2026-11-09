@@ -17,6 +17,7 @@ Komponen ISA opsional untuk ATL (Android Translation Layer) — bukan ATL itu se
 | `m3.5-loop` | Decoder +loop/arith (SDIV, SMULL, SXTW, LDRB/STRB) | `loop_sum_arm64` = `5050` |
 | `v0.4-general` | Decoder 60+ instruksi + loader TLS/stack ABI (dari glibc work, tanpa glibc baggage) | regresi 3 test hijau |
 | `v0.5-stress` | Stress test 5 kategori decoder | `tests/run-stress.sh` **5/5 PASS** |
+| `m6-mvp` | Thunk dispatch — guest panggil host function | `tests/thunk/hello_puts` → `hello from host puts` |
 
 ---
 
@@ -153,14 +154,20 @@ bash tests/run-stress.sh
 6. Glibc bukan target ATL — jangan lanjut wip/glibc-write
 7. Null deref di glibc = bug loader, bukan decoder
 
-## Next: M6 (thunk)
+## Next: M6 Phase 2 (generic thunk)
 
-Guest ARM64 panggil fungsi host x86_64 via `OP_THUNK` stub.
+Phase 1 (MVP) selesai: hardcoded `puts` via `THUNK_BASE + idx`.
 
-1. Format stub ARM64 (packing argumen)
-2. `OP_THUNK` decoder + exec
-3. Host unpacker (dlsym + call + return)
-4. Test: `.so` ARM64 handwritten panggil `write` host
-5. Integrasi `atl_display_init` (M7 target)
+Phase 2:
+1. Format signature `.def` (parse `int puts(const char *)`)
+2. Trampoline generator: pack args (x0-x7 + stack) per signature
+3. `dlsym` resolution untuk host libc
+4. FP args (`v0-v7` → xmm) untuk fungsi seperti `cos`, `glClearColor`
+5. Test: guest panggil `cos(0.0)` dari libm host
 
-Setelah M6: M4 (Bionic struct) + M3.6 (Bionic shim ARM64) terbuka.
+Phase 3 (setelah Phase 2):
+- Callback dari host ke guest (wajib untuk `eglSwapBuffers`)
+- `.so` dynamic loading (butuh PT_INTERP + DT_NEEDED support di loader)
+- Bionic shim ARM64 (`libc.so`, `libEGL.so`, `libvulkan.so`)
+
+Setelah M6 Phase 2: M4 (Bionic struct) + M3.6 (Bionic shim) terbuka.
