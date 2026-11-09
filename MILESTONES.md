@@ -1,0 +1,166 @@
+# atld — ARM64 → x86_64 userspace ISA translator
+
+Translator untuk mengeksekusi binary userspace ARM64/AArch64 di host Linux x86_64.
+Komponen ISA opsional untuk ATL (Android Translation Layer) — bukan ATL itu sendiri.
+
+**Fokus**: ABI + syscall Linux umum, bukan API framework tertentu.
+
+---
+
+## Status milestone
+
+| Tag | Isi | Test gate |
+|---|---|---|
+| `m1-dump` | ELF loader + `atld --dump` (format readelf-like) | `tests/test_dump.py` 11/11 field |
+| `m2-interp` | Interpreter ARM64 subset | `hello_arm64` print, exit 0 |
+| `m3-syscall` | Syscall: openat/read/write/close/lseek | `file_read_arm64` byte-exact `/etc/os-release` |
+| `m3.5-loop` | Decoder +loop/arith (SDIV, SMULL, SXTW, LDRB/STRB) | `loop_sum_arm64` = `5050` |
+| `v0.4-general` | Decoder 60+ instruksi + loader TLS/stack ABI (dari glibc work, tanpa glibc baggage) | regresi 3 test hijau |
+| `v0.5-stress` | Stress test 5 kategori decoder | `tests/run-stress.sh` **5/5 PASS** |
+
+---
+
+## Apa yang sudah bekerja
+
+### Instruksi ARM64 (verified via stress test)
+
+**Integer arithmetic** (`v0.5-stress`):
+- `MADD`, `MSUB`, `SMADDL`, `UMADDL`, `SMULH`, `UMULH`, `SMULL`
+- `SDIV`, `UDIV`, `LSL/LSR/ASR` immediate, `EXTR`
+- `ADC/ADCS/SBC/SBCS`
+
+**Bitfield** (`v0.5-stress`):
+- `UBFX`, `UBFIZ`, `SBFX`, `SBFIZ`, `BFI`, `BFXIL` (via UBFM/SBFM/BFM)
+
+**Bit manipulation** (`v0.5-stress`):
+- `REV`, `REV16`, `REV32`, `RBIT`, `CLZ`
+
+**Conditional** (`v0.5-stress`):
+- `CSEL`, `CSINC`, `CSINV`, `CSNEG`
+- `B.cond`, `CBZ/CBNZ`, `TBZ/TBNZ`
+
+**Load/store** (`v0.5-stress`):
+- `LDR/STR` immediate (32/64), register offset, pre/post-index
+- `LDRSB/LDRSH/LDRSW` sign-extend (imm + reg offset)
+- `LDRB/STRB/LDRH/STRH` byte/half
+- `STP/LDP` 32/64-bit + SIMD 128-bit (`STP_Q/LDP_Q`)
+- `LDUR/STUR` unscaled
+
+**Branches**: `B`, `BL`, `BLR`, `BR`, `RET`, `RET xN`
+
+**Others**: `MOVZ/N/K`, `ADR/ADRP`, `ADD/SUB` imm/reg/ext, `ORR/ORN/EON/AND/ANDS/EOR/BIC` reg, `ANDS_IMM` (TST), `SDIV`, `MRS/MSR` (TPIDR_EL0, DCZID_EL0, CTR_EL0), `MOVI V.4S`, `DUP V.16B`
+
+**NOP-safe (fitur x86_64 tidak ada)**:
+- Barrier: `DSB/DMB/ISB/CLREX/SB/SSBB/PSSBB/CSDB`
+- PAC: `PACIASP/AUTIASP/PACIBSP/AUTIBSP/AUTIA1716/AUTIB1716/...`
+- HINT: `BTI/NOP/YIELD/WFE/WFI`
+
+### Syscall (aarch64 → x86_64 mapping)
+
+| Guest | Host | Nama |
+|---|---|---|
+| 56 | 257 | openat |
+| 57 | 3 | close |
+| 62 | 8 | lseek |
+| 63 | 0 | read |
+| 64 | 1 | write |
+| 93 | 60 | exit |
+| 94 | 231 | exit_group |
+| 96 | 218 | set_tid_address |
+| 214 | 12 | brk |
+| 215 | 11 | munmap |
+| 222 | 9 | mmap |
+| 226 | 10 | mprotect |
+| 261 | 302 | prlimit64 |
+| 278 | 318 | getrandom |
+| 99 | — | set_robust_list (stub return 0) |
+| 293 | — | rseq (stub return -ENOSYS) |
+
+### Loader
+
+- Parse ELF64 AArch64, validasi class/data/machine
+- **Hanya ET_EXEC (non-PIE)** — PIE ditolak
+- Map PT_LOAD: RW → memcpy → mprotect (handle RX-only segment)
+- **Non-aligned PT_LOAD fix**: `memcpy(m + (vaddr - vstart), ...)` — penting untuk segment seperti `vaddr=0x48c618`
+- **TLS setup**: parse PT_TLS, alokasi TCB (0x30 header) + .tdata + .tbss, init `tcb[0..5]` (self, dtv, self, flags, sysinfo, stack_guard)
+- **Stack ABI**: 40-byte frame (argc=0, argv terminator, envp terminator, auxv AT_NULL)
+
+### Debugging tools
+
+- `atld --dump <elf>` — ELF header + program headers (readelf-like)
+- SIGSEGV handler — print GPRs + pc_history (64 entries) saat crash
+- `pc_history` — trace 64 PC terakhir, cross-reference dengan `objdump`
+
+---
+
+## Apa yang **belum** (atau gagal)
+
+### Glibc static — TIDAK jalan
+
+`tests/glibc/glibc_write` (glibc static write-only) crash di `__ctype_init` (SIGSEGV null deref). Root cause: relokasi `.tdata` glibc butuh `R_AARCH64_IRELATIVE` processing (5 relocation entries di glibc), loader belum handle. **Branch `wip/glibc-write`** menyimpan 40 patch eksperimen untuk referensi.
+
+**Glibc static bukan target ATL** — aplikasi Android pakai Bionic dinamis.
+
+### Belum diimplementasi
+
+- **M6 (thunk)**: guest ARM64 panggil fungsi host x86_64 — inti ATL. Ini milestone berikutnya.
+- **M5 (JIT)**: performance near-native. Interpreter lambat (~100× native).
+- **M4 (struct translation)**: `stat`, `ioctl`, `getdents` Bionic ↔ host. Butuh M6 dulu.
+- **M7 (ATL integration)**: frame pertama Unity di Wayland.
+- **Dynamic linker**: `PT_INTERP`, `DT_NEEDED`, `.so` loading, symbol resolution.
+- **Bionic libc shim ARM64**: `libc.so`, `libEGL.so`, `libvulkan.so` guest → host via thunk.
+- **Signal handling**: `rt_sigaction`/`rt_sigreturn` sebenarnya (sekarang crash silently).
+- **Thread**: `clone`, `futex`, `set_robust_list` proper (sekarang stub).
+- **SIMD berat**: `FADD V`, `FMUL V`, `CMEQ`, `ZIP1`, `TBL`, `CNT`, `XTN` — hanya basic SIMD (`MOVI_4S`, `DUP_B16`, LDR/STR Q/S) yang ada.
+
+---
+
+## Cara resume
+
+```bash
+cd ~/atld
+git checkout v0.5-stress
+cmake --build build -j"$(nproc)"
+
+# Regresi (3 test dasar — WAJIB hijau)
+timeout 5 ./build/atld tests/arm64/hello_arm64
+timeout 5 ./build/atld tests/arm64/loop_sum_arm64    # harus 5050
+timeout 5 ./build/atld tests/arm64/file_read_arm64   # harus byte-exact /etc/os-release
+
+# Stress test 5 kategori (WAJIB hijau di milestone v0.5)
+bash tests/run-stress.sh
+# Expected: ALL 5 CATEGORIES PASS
+
+
+
+
+## Branch
+
+| Branch | Isi |
+|---|---|
+| `main` | m3.5-loop + ADC fix |
+| `v0.4-general` | glibc-derived, tanpa baggage |
+| `v0.5-stress` | HEAD, verified 5/5 |
+| `wip/glibc-write` | 40 patch, crash TLS, arsip |
+
+## Gotchas
+
+1. TSO menguntungkan: ARM→x86, host lebih ketat, barrier boleh NOP
+2. Decoder mask sering salah bit 31 (B vs BL, ADR vs ADRP)
+3. Collision mask: ADC vs SDIV (bit 22=3), CSEL vs ADC (bit 29)
+4. Stack ABI butuh argc→argv→envp→auxv AT_NULL
+5. Non-aligned PT_LOAD: memcpy ke `vaddr - vstart`
+6. Glibc bukan target ATL — jangan lanjut wip/glibc-write
+7. Null deref di glibc = bug loader, bukan decoder
+
+## Next: M6 (thunk)
+
+Guest ARM64 panggil fungsi host x86_64 via `OP_THUNK` stub.
+
+1. Format stub ARM64 (packing argumen)
+2. `OP_THUNK` decoder + exec
+3. Host unpacker (dlsym + call + return)
+4. Test: `.so` ARM64 handwritten panggil `write` host
+5. Integrasi `atl_display_init` (M7 target)
+
+Setelah M6: M4 (Bionic struct) + M3.6 (Bionic shim ARM64) terbuka.
