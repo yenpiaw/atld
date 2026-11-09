@@ -20,3 +20,8 @@ tests/stress/mem
 tests/thunk/hello_puts
 tests/thunk/strlen_test
 tests/thunk/cos_test
+
+# fix test binaries
+tests/fix/test_udiv32
+tests/fix/test_errno
+tests/fix/test_sp_align

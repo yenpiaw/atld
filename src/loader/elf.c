@@ -157,12 +157,16 @@ int elf_load(const char *path, struct guest_cpu *cpu) {
      *   sp[4] = auxv[0].val = 0
      * sp = stack_top - 40 so sp+16 is still inside the mapping. */
     uint64_t *top = (uint64_t *)((char *)stack + (1 << 20));
-    top[-1] = 0;   /* auxv[0].val */
-    top[-2] = 0;   /* auxv[0].type = AT_NULL */
-    top[-3] = 0;   /* envp[0] = NULL */
-    top[-4] = 0;   /* argv[0] = NULL */
-    top[-5] = 0;   /* argc = 0 */
-    cpu->sp = (uint64_t)&top[-5];
+    /* aarch64 Linux ABI: sp must be 16-byte aligned at _start.
+     * 5-word frame (40 bytes) is NOT 16-aligned (40 % 16 == 8). Pad to
+     * 6 words (48 bytes) so sp = top - 48 is 16-aligned. */
+    top[-1] = 0;   /* padding slot (keeps sp 16-aligned) */
+    top[-2] = 0;   /* auxv[0].val */
+    top[-3] = 0;   /* auxv[0].type = AT_NULL */
+    top[-4] = 0;   /* envp[0] = NULL */
+    top[-5] = 0;   /* argv[0] = NULL */
+    top[-6] = 0;   /* argc = 0 */
+    cpu->sp = (uint64_t)&top[-6];
     fprintf(stderr, "atld: stack sp=0x%llx top=0x%llx (40-byte frame: argc/argv/envp/auxv)",
             (unsigned long long)cpu->sp, (unsigned long long)(uintptr_t)top);
 

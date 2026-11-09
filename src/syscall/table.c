@@ -65,10 +65,13 @@ int syscall_dispatch(struct guest_cpu *cpu) {
             long ret = host_syscall6(syscall_map[i].host_nr,
                 (long)cpu->x[0], (long)cpu->x[1], (long)cpu->x[2],
                 (long)cpu->x[3], (long)cpu->x[4], (long)cpu->x[5]);
+            /* glibc syscall() returns -1 and sets errno on failure. Guest
+             * expects the raw -errno (e.g. -ENOENT = -2), not -1 = -EPERM.
+             * Capture errno before fprintf (which can clobber it). */
+            int saved_errno = (ret < 0) ? errno : 0;
             fprintf(stderr, "atld: svc %llu -> host %u ret=%ld errno=%d\n",
-                    (unsigned long long)nr, syscall_map[i].host_nr, ret,
-                    ret < 0 ? errno : 0);
-            cpu->x[0] = (uint64_t)ret;
+                    (unsigned long long)nr, syscall_map[i].host_nr, ret, saved_errno);
+            cpu->x[0] = (ret < 0) ? (uint64_t)(-saved_errno) : (uint64_t)ret;
             return 0;
         }
     }

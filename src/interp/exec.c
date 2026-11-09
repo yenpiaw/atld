@@ -214,7 +214,20 @@ int interp_step(struct guest_cpu *cpu) {
     case OP_UDIV: {
         uint64_t a = getr(cpu, d.rn), b = getr(cpu, d.rm);
         uint64_t r;
-        if (!d.sf) { a = (uint64_t)(int64_t)(int32_t)a; b = (uint64_t)(int64_t)(int32_t)b; }
+        if (!d.sf) {
+            if (d.op == OP_SDIV) {
+                /* 32-bit signed: sign-extend to 64, divide, mask back. */
+                a = (uint64_t)(int64_t)(int32_t)a;
+                b = (uint64_t)(int64_t)(int32_t)b;
+            } else {
+                /* 32-bit unsigned: zero-extend, NOT sign-extend.
+                 * Bug: sign-extending 0xFFFFFFFF makes it 0xFFFFFFFFFFFFFFFF,
+                 * dividing by 2 gives 0x7FFFFFFFFFFFFFFF, masked to 0xFFFFFFFF
+                 * instead of the correct 0x7FFFFFFF. */
+                a &= 0xFFFFFFFF;
+                b &= 0xFFFFFFFF;
+            }
+        }
         if (b == 0) r = 0;
         else if (d.op == OP_SDIV) r = (uint64_t)((int64_t)a / (int64_t)b);
         else r = a / b;
