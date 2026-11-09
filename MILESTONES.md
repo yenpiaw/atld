@@ -21,6 +21,8 @@ Komponen ISA opsional untuk ATL (Android Translation Layer) — bukan ATL itu se
 | `m6-phase2` | Generic thunk via dlsym + FP args | `tests/thunk/cos_test` → `cos(0.0)=1.0 OK` |
 | `m6-phase2b-multiarg` | FMOV immediate + multi-arg thunk | `fma(2,3,4)=10`, `test_d4=4321`, `test_i6=654321` |
 | `m6-phase3-mvp` | GOT trampoline — guest indirect call | `tests/thunk/test_got` → `hello from GOT trampoline` |
+| `m6-phase3-mvp2a` | `.rela.plt` parser + named trampolines | `dyn_test` → 4 PLT slots patched |
+| `m6-phase3-mvp2b` | **Dynamic ARM64 executable runs** | `ATLD_MAIN=0x... dyn_test` → `hello from dynamic`, rc=0 |
 
 ---
 
