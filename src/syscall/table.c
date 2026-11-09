@@ -9,6 +9,9 @@ struct syscall_map { uint16_t guest_nr, host_nr; };
 
 static const struct syscall_map syscall_map[] = {
     /* aarch64 -> x86_64 */
+    {  96, 218 },  /* set_tid_address */
+    { 261, 302 },  /* prlimit64       */
+    { 278, 318 },  /* getrandom       */
     { 56, 257 },  /* openat       */
     { 62,   8 },  /* lseek        */
     { 63,   0 },  /* read         */
@@ -34,6 +37,13 @@ int syscall_dispatch(struct guest_cpu *cpu) {
         (unsigned long long)cpu->x[1],
         (unsigned long long)cpu->x[2],
         (unsigned long long)cpu->x[3]);
+    /* set_robust_list: 32-bit aarch64 has no host equivalent — fake success.
+     * glibc doesn't check return value; robust futexes won't work but that
+     * matches QEMU's workaround. */
+    if (nr == 99) { cpu->x[0] = 0; return 0; }
+    /* rseq: return -ENOSYS so glibc disables rseq and falls back to futex. */
+    if (nr == 293) { cpu->x[0] = (uint64_t)(-38); return 0; }
+
     for (size_t i = 0; i < sizeof(syscall_map)/sizeof(syscall_map[0]); i++) {
         if (syscall_map[i].guest_nr == nr) {
             if (nr == 94 || nr == 93) {  /* exit_group / exit */

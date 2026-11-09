@@ -37,8 +37,18 @@ int elf_load(const char *path, struct guest_cpu *cpu) {
     fprintf(stderr, "atld: entry=0x%llx phnum=%u\n",
             (unsigned long long)eh->e_entry, (unsigned)eh->e_phnum);
 
+    uint64_t tls_tdata_vaddr = 0, tls_tdata_filesz = 0;
+    uint64_t tls_memsz = 0, tls_align = 0;
+
     for (int i = 0; i < eh->e_phnum; i++) {
         Elf64_Phdr *ph = (Elf64_Phdr *)((char *)fmap + eh->e_phoff + (size_t)i*eh->e_phentsize);
+        if (ph->p_type == PT_TLS) {
+            tls_tdata_vaddr  = ph->p_vaddr;
+            tls_tdata_filesz = ph->p_filesz;
+            tls_memsz        = ph->p_memsz;
+            tls_align        = ph->p_align ? ph->p_align : 16;
+            continue;
+        }
         if (ph->p_type != PT_LOAD) continue;
 
         uint64_t vaddr = ph->p_vaddr, memsz = ph->p_memsz;
@@ -67,7 +77,11 @@ int elf_load(const char *path, struct guest_cpu *cpu) {
                     (unsigned long long)vstart);
             munmap(fmap, fsize); return -1;
         }
-        memcpy(m, (char *)fmap + off, filesz);
+        /* PT_LOAD vaddr may not be page-aligned (e.g. t2_arm64 RW segment
+         * at 0x48c618).  mmap returned address is vstart-aligned, but
+         * contents must land at vaddr.  Copy at (vaddr - vstart) offset
+         * within the mapping. */
+        memcpy((char *)m + (vaddr - vstart), (char *)fmap + off, filesz);
         if (mprotect(m, msize, prot) < 0) {
             fprintf(stderr, "atld: mprotect [0x%llx,+0x%llx) -> %d failed: %s\n",
                     (unsigned long long)vstart, (unsigned long long)msize,
@@ -83,12 +97,68 @@ int elf_load(const char *path, struct guest_cpu *cpu) {
     memset(cpu->v, 0, sizeof(cpu->v));
     cpu->pc = eh->e_entry;
 
-    /* Dummy TLS: 4KB zeroed. glibc writes tcbhead_t here; layout may be
-     * wrong for our purposes but a valid pointer prevents NULL deref. */
-    void *tls = mmap(NULL, 4096, PROT_READ|PROT_WRITE,
-                     MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
-    if (tls == MAP_FAILED) { perror("mmap tls"); munmap(fmap, fsize); return -1; }
-    cpu->tls_base = (uint64_t)tls;
+    /* Proper TLS setup per ARM64 glibc ABI:
+     *   tpidr_el0 -> TCB start (low address)
+     *   tpidr_el0 + TCB_SIZE -> .tdata (copied from file)
+     *   tpidr_el0 + TCB_SIZE + tdata_filesz -> .tbss (zero-filled)
+     * TCB_SIZE is glibc's tcbhead_t size. 0x30 is common for aarch64. */
+    if (tls_memsz > 0) {
+        const uint64_t TCB_SIZE = 0x30;
+        uint64_t align = tls_align < 16 ? 16 : tls_align;
+        uint64_t total = TCB_SIZE + tls_memsz + align;
+
+        void *tls_map = mmap(NULL, total, PROT_READ|PROT_WRITE,
+                             MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+        if (tls_map == MAP_FAILED) { perror("mmap tls"); munmap(fmap, fsize); return -1; }
+        uint64_t tcb_addr = ((uint64_t)tls_map + align - 1) & ~(align - 1);
+
+        /* Copy .tdata from mapped PT_LOAD area (same address as file vaddr) */
+        if (tls_tdata_filesz > 0) {
+            fprintf(stderr, "atld: DBG tdata vaddr=0x%llx filesz=0x%llx TCB_SIZE=0x%llx\n",
+                    (unsigned long long)tls_tdata_vaddr,
+                    (unsigned long long)tls_tdata_filesz,
+                    (unsigned long long)TCB_SIZE);
+            fprintf(stderr, "atld: DBG src[0]=0x%016llx src[8]=0x%016llx\n",
+                    (unsigned long long)*(uint64_t *)tls_tdata_vaddr,
+                    (unsigned long long)*(uint64_t *)(tls_tdata_vaddr + 8));
+            memcpy((void *)(tcb_addr + TCB_SIZE),
+                   (void *)tls_tdata_vaddr, tls_tdata_filesz);
+            fprintf(stderr, "atld: DBG dst[0]=0x%016llx dst[8]=0x%016llx (at tcb+0x%llx)\n",
+                    (unsigned long long)*(uint64_t *)(tcb_addr + TCB_SIZE),
+                    (unsigned long long)*(uint64_t *)(tcb_addr + TCB_SIZE + 8),
+                    (unsigned long long)TCB_SIZE);
+        }
+
+        /* Initialize TCB header (aarch64 glibc tcbhead_t = 0x30 bytes):
+         *   tcb[0] 0x00 = tcb (self-pointer)
+         *   tcb[1] 0x08 = dtv
+         *   tcb[2] 0x10 = self
+         *   tcb[3] 0x18 = multiple_threads (int) + gscope_flag (int)
+         *   tcb[4] 0x20 = sysinfo
+         *   tcb[5] 0x28 = stack_guard
+         * tcb[6] onwards (offset 0x30) is .tdata — DO NOT write there. */
+        uint64_t *tcb = (uint64_t *)tcb_addr;
+        tcb[0] = tcb_addr;
+        tcb[1] = 0;
+        tcb[2] = tcb_addr;
+        tcb[3] = 0;
+        tcb[4] = 0;
+        tcb[5] = 0xDEADBEEFCAFEBABEULL;
+
+        cpu->tls_base = tcb_addr;
+        fprintf(stderr, "atld: TLS tcb=0x%llx tdata=0x%llx tbss=0x%llx align=0x%llx\n",
+                (unsigned long long)tcb_addr,
+                (unsigned long long)tls_tdata_filesz,
+                (unsigned long long)(tls_memsz - tls_tdata_filesz),
+                (unsigned long long)align);
+    } else {
+        /* No PT_TLS: dummy fallback */
+        void *tls = mmap(NULL, 4096, PROT_READ|PROT_WRITE,
+                         MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+        if (tls == MAP_FAILED) { perror("mmap tls"); munmap(fmap, fsize); return -1; }
+        cpu->tls_base = (uint64_t)tls;
+        fprintf(stderr, "atld: TLS dummy (no PT_TLS)\n");
+    }
 
     void *stack = mmap(NULL, 1 << 20, PROT_READ|PROT_WRITE,
                        MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);

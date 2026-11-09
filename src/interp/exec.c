@@ -164,17 +164,28 @@ int interp_step(struct guest_cpu *cpu) {
     case OP_STP:
     case OP_LDP: {
         uint64_t base = (d.rn == 31) ? cpu->sp : getr(cpu, d.rn);
-        int64_t off = sext64(d.imm16, 7) * 8;
+        int elem_sz = d.sf ? 8 : 4;
+        int64_t off = sext64(d.imm16, 7) * elem_sz;
         uint64_t addr, wb = 0;
         if (d.shift == 0)      addr = base + (uint64_t)off;
         else if (d.shift == 1) { addr = base + (uint64_t)off; wb = addr; }
         else                   { addr = base;                  wb = base + (uint64_t)off; }
         if (d.op == OP_STP) {
-            *(uint64_t *)addr         = getr(cpu, d.rd);
-            *(uint64_t *)(addr + 8)   = getr(cpu, d.rm);
+            if (d.sf) {
+                *(uint64_t *)addr       = getr(cpu, d.rd);
+                *(uint64_t *)(addr + 8) = getr(cpu, d.rm);
+            } else {
+                *(uint32_t *)addr       = (uint32_t)getr(cpu, d.rd);
+                *(uint32_t *)(addr + 4) = (uint32_t)getr(cpu, d.rm);
+            }
         } else {
-            setr(cpu, d.rd, *(uint64_t *)addr);
-            setr(cpu, d.rm, *(uint64_t *)(addr + 8));
+            if (d.sf) {
+                setr(cpu, d.rd, *(uint64_t *)addr);
+                setr(cpu, d.rm, *(uint64_t *)(addr + 8));
+            } else {
+                setr(cpu, d.rd, (uint64_t)*(uint32_t *)addr);
+                setr(cpu, d.rm, (uint64_t)*(uint32_t *)(addr + 4));
+            }
         }
         if (d.shift != 0) {
             if (d.rn == 31) cpu->sp = wb;
@@ -194,6 +205,10 @@ int interp_step(struct guest_cpu *cpu) {
     case OP_BR:
         next_pc = getr(cpu, d.rn);
         break;
+    case OP_BLR:
+        setr(cpu, 30, cpu->pc + 4);
+        next_pc = getr(cpu, d.rn);
+        break;
 
     case OP_SDIV:
     case OP_UDIV: {
@@ -206,6 +221,30 @@ int interp_step(struct guest_cpu *cpu) {
         setr(cpu, d.rd, apply_sf(r, d.sf));
         break;
     }
+    case OP_UBFM: {
+        int datasize = d.sf ? 64 : 32;
+        uint64_t src = getr(cpu, d.rn);
+        if (datasize == 32) src &= 0xFFFFFFFF;
+        int R = (int)d.imm;
+        int S = (int)d.imm16;
+        uint64_t result;
+        if (R <= S) {
+            /* UBFX: extract (S-R+1) bits from position R */
+            int width = S - R + 1;
+            uint64_t mask = (width >= 64) ? ~0ULL : ((1ULL << width) - 1);
+            result = (src >> R) & mask;
+        } else {
+            /* UBFIZ: insert low (S+1) bits at position (datasize-R) */
+            int width = S + 1;
+            int lsb = (datasize - R) & (datasize - 1);
+            uint64_t mask = (width >= 64) ? ~0ULL : ((1ULL << width) - 1);
+            result = (src & mask) << lsb;
+        }
+        if (datasize == 32) result &= 0xFFFFFFFF;
+        setr(cpu, d.rd, result);
+        break;
+    }
+
     case OP_LSL_IMM:
         setr(cpu, d.rd, apply_sf(getr(cpu, d.rn) << d.imm, d.sf));
         break;
@@ -373,6 +412,213 @@ int interp_step(struct guest_cpu *cpu) {
         if (d.shift != 0) {
             if (d.rn == 31) cpu->sp = wb;
             else            cpu->x[d.rn] = wb;
+        }
+        break;
+    }
+
+    case OP_CSEL:
+    case OP_CSINC:
+    case OP_CSINV:
+    case OP_CSNEG: {
+        int take = check_cond(cpu, (uint8_t)d.shift);
+        uint64_t rn = getr(cpu, d.rn);
+        uint64_t rm = getr(cpu, d.rm);
+        uint64_t r;
+        if (d.op == OP_CSEL)       r = take ? rn : rm;
+        else if (d.op == OP_CSINC) r = take ? rn : (rm + 1);
+        else if (d.op == OP_CSINV) r = take ? rn : ~rm;
+        else                       r = take ? rn : (~rm + 1);
+        setr(cpu, d.rd, apply_sf(r, d.sf));
+        break;
+    }
+    case OP_LDR_BH: {
+        uint64_t base = (d.rn == 31) ? cpu->sp : getr(cpu, d.rn);
+        uint64_t addr = base + ((uint64_t)d.imm12 << d.shift);
+        uint64_t v;
+        if (d.shift == 0) {
+            uint8_t b = *(uint8_t *)addr;
+            if (d.hw == 0)      v = (uint64_t)b;
+            else if (d.hw == 1) v = (uint64_t)(uint32_t)(int32_t)(int8_t)b;
+            else                v = (uint64_t)(int64_t)(int8_t)b;
+        } else {
+            uint16_t h = *(uint16_t *)addr;
+            if (d.hw == 0)      v = (uint64_t)h;
+            else if (d.hw == 1) v = (uint64_t)(uint32_t)(int32_t)(int16_t)h;
+            else                v = (uint64_t)(int64_t)(int16_t)h;
+        }
+        setr(cpu, d.rd, v);
+        break;
+    }
+    case OP_STR_BH: {
+        uint64_t base = (d.rn == 31) ? cpu->sp : getr(cpu, d.rn);
+        uint64_t addr = base + ((uint64_t)d.imm12 << d.shift);
+        uint64_t v = getr(cpu, d.rd);
+        if (d.shift == 0) *(uint8_t *)addr  = (uint8_t)v;
+        else              *(uint16_t *)addr = (uint16_t)v;
+        break;
+    }
+
+    case OP_TBZ:
+    case OP_TBNZ: {
+        uint64_t rt = getr(cpu, d.rd);
+        int bit = (int)d.shift;
+        int bitval = (bit < 64) ? ((rt >> bit) & 1) : 0;
+        int take = (d.op == OP_TBZ) ? (bitval == 0) : (bitval == 1);
+        if (take) next_pc = cpu->pc + (uint64_t)d.imm;
+        break;
+    }
+
+    case OP_MOVI_4S: {
+        uint64_t imm32 = (uint64_t)(d.imm16 & 0xff);
+        uint64_t w = imm32 | (imm32 << 32);   /* 2 × 32-bit lanes in uint64 */
+        cpu->v[d.rd][0] = w;
+        cpu->v[d.rd][1] = w;
+        break;
+    }
+
+    case OP_MSR: {
+        switch (d.shift) {
+        case 0: cpu->tls_base = getr(cpu, d.rd); break;  // TPIDR_EL0
+        case 1: break;                                    // TPIDRRO_EL0 (readonly alias) — ignore
+        }
+        break;
+    }
+
+    /* === Batch 1 exec === */
+    case OP_MADD:
+    case OP_MSUB: {
+        uint64_t a = getr(cpu, d.rn);
+        uint64_t b = getr(cpu, d.rm);
+        uint64_t c = getr(cpu, (int)d.imm);
+        if (!d.sf) { a &= 0xFFFFFFFF; b &= 0xFFFFFFFF; c &= 0xFFFFFFFF; }
+        uint64_t r = (d.op == OP_MADD) ? (a * b + c) : (c - a * b);
+        setr(cpu, d.rd, apply_sf(r, d.sf));
+        break;
+    }
+    case OP_SMADDL: {
+        int64_t a = (int64_t)(int32_t)(uint32_t)getr(cpu, d.rn);
+        int64_t b = (int64_t)(int32_t)(uint32_t)getr(cpu, d.rm);
+        int64_t c = (int64_t)getr(cpu, (int)d.imm);
+        setr(cpu, d.rd, (uint64_t)(a * b + c));
+        break;
+    }
+    case OP_UMADDL: {
+        uint64_t a = getr(cpu, d.rn) & 0xFFFFFFFF;
+        uint64_t b = getr(cpu, d.rm) & 0xFFFFFFFF;
+        uint64_t c = getr(cpu, (int)d.imm);
+        setr(cpu, d.rd, a * b + c);
+        break;
+    }
+    case OP_SMULH: {
+        __int128 a = (int64_t)getr(cpu, d.rn);
+        __int128 b = (int64_t)getr(cpu, d.rm);
+        __int128 r = a * b;
+        setr(cpu, d.rd, (uint64_t)(r >> 64));
+        break;
+    }
+    case OP_UMULH: {
+        unsigned __int128 a = getr(cpu, d.rn);
+        unsigned __int128 b = getr(cpu, d.rm);
+        unsigned __int128 r = a * b;
+        setr(cpu, d.rd, (uint64_t)(r >> 64));
+        break;
+    }
+    case OP_RBIT: {
+        if (d.sf) {
+            uint64_t v = getr(cpu, d.rn), r = 0;
+            for (int i = 0; i < 64; i++) { r = (r << 1) | (v & 1); v >>= 1; }
+            setr(cpu, d.rd, r);
+        } else {
+            uint32_t v = (uint32_t)getr(cpu, d.rn), r = 0;
+            for (int i = 0; i < 32; i++) { r = (r << 1) | (v & 1); v >>= 1; }
+            setr(cpu, d.rd, (uint64_t)r);
+        }
+        break;
+    }
+    case OP_REV: {
+        if (d.sf) {
+            uint64_t v = getr(cpu, d.rn), r = 0;
+            for (int i = 0; i < 8; i++) { r = (r << 8) | (v & 0xFF); v >>= 8; }
+            setr(cpu, d.rd, r);
+        } else {
+            uint32_t v = (uint32_t)getr(cpu, d.rn), r = 0;
+            for (int i = 0; i < 4; i++) { r = (r << 8) | (v & 0xFF); v >>= 8; }
+            setr(cpu, d.rd, (uint64_t)r);
+        }
+        break;
+    }
+    case OP_REV16: {
+        if (d.sf) {
+            uint64_t v = getr(cpu, d.rn);
+            uint64_t r = ((v & 0x00FF00FF00FF00FFULL) << 8) | ((v & 0xFF00FF00FF00FF00ULL) >> 8);
+            setr(cpu, d.rd, r);
+        } else {
+            uint32_t v = (uint32_t)getr(cpu, d.rn);
+            uint32_t r = ((v & 0x00FF00FF) << 8) | ((v & 0xFF00FF00) >> 8);
+            setr(cpu, d.rd, (uint64_t)r);
+        }
+        break;
+    }
+    case OP_REV32: {
+        uint64_t v = getr(cpu, d.rn);
+        uint32_t lo = (uint32_t)v, hi = (uint32_t)(v >> 32);
+        lo = ((lo & 0xFF) << 24) | ((lo & 0xFF00) << 8) | ((lo & 0xFF0000) >> 8) | ((lo & 0xFF000000) >> 24);
+        hi = ((hi & 0xFF) << 24) | ((hi & 0xFF00) << 8) | ((hi & 0xFF0000) >> 8) | ((hi & 0xFF000000) >> 24);
+        setr(cpu, d.rd, (uint64_t)lo | ((uint64_t)hi << 32));
+        break;
+    }
+    case OP_CLZ: {
+        if (d.sf) {
+            uint64_t v = getr(cpu, d.rn);
+            setr(cpu, d.rd, v == 0 ? 64 : (uint64_t)__builtin_clzll(v));
+        } else {
+            uint32_t v = (uint32_t)getr(cpu, d.rn);
+            setr(cpu, d.rd, v == 0 ? 32 : (uint64_t)__builtin_clz(v));
+        }
+        break;
+    }
+    case OP_EXTR: {
+        int lsb = (int)d.imm;
+        uint64_t n = getr(cpu, d.rn);
+        uint64_t m = getr(cpu, d.rm);
+        if (d.sf) {
+            uint64_t r = (lsb == 0) ? m : ((m >> lsb) | (n << (64 - lsb)));
+            setr(cpu, d.rd, r);
+        } else {
+            uint32_t nn = (uint32_t)n, mm = (uint32_t)m;
+            uint32_t r = (lsb == 0) ? mm : ((mm >> lsb) | (nn << (32 - lsb)));
+            setr(cpu, d.rd, (uint64_t)r);
+        }
+        break;
+    }
+    case OP_AND_REG:
+    case OP_ANDS_REG:
+    case OP_EOR_REG:
+    case OP_ORN_REG:
+    case OP_EON_REG:
+    case OP_BIC_REG: {
+        uint64_t rn = getr(cpu, d.rn);
+        uint64_t rm = shifted(getr(cpu, d.rm), d.shift, (uint32_t)d.imm, d.sf);
+        uint64_t r;
+        int set_flg = 0;
+        switch (d.op) {
+        case OP_AND_REG:  r = rn & rm;  break;
+        case OP_ANDS_REG: r = rn & rm;  set_flg = 1; break;
+        case OP_EOR_REG:  r = rn ^ rm;  break;
+        case OP_ORN_REG:  r = rn | ~rm; break;
+        case OP_EON_REG:  r = rn ^ ~rm; break;
+        case OP_BIC_REG:  r = rn & ~rm; break;
+        default: r = 0;
+        }
+        if (d.rd != 31) setr(cpu, d.rd, apply_sf(r, d.sf));
+        if (set_flg) {
+            uint32_t flags = cpu->pstate & ~((1u<<31)|(1u<<30)|(1u<<29)|(1u<<28));
+            uint64_t mask = d.sf ? ~0ULL : 0xffffffffULL;
+            uint64_t mr = r & mask;
+            int sb = d.sf ? 63 : 31;
+            if ((mr >> sb) & 1) flags |= (1u<<31);
+            if (mr == 0)        flags |= (1u<<30);
+            cpu->pstate = flags;
         }
         break;
     }
