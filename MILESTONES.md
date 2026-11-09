@@ -23,6 +23,7 @@ Komponen ISA opsional untuk ATL (Android Translation Layer) — bukan ATL itu se
 | `m6-phase3-mvp` | GOT trampoline — guest indirect call | `tests/thunk/test_got` → `hello from GOT trampoline` |
 | `m6-phase3-mvp2a` | `.rela.plt` parser + named trampolines | `dyn_test` → 4 PLT slots patched |
 | `m6-phase3-mvp2b` | **Dynamic ARM64 executable runs** | `ATLD_MAIN=0x... dyn_test` → `hello from dynamic`, rc=0 |
+| `m6-phase4-callback` | **Callback host↔guest** (nested interp) | `test_callback` → `cb1=7`, `cb2=30`, nested SVC OK |
 
 ---
 
