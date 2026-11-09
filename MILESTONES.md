@@ -19,6 +19,8 @@ Komponen ISA opsional untuk ATL (Android Translation Layer) — bukan ATL itu se
 | `v0.5-stress` | Stress test 5 kategori decoder | `tests/run-stress.sh` **5/5 PASS** |
 | `m6-mvp` | Thunk dispatch — guest panggil host function | `tests/thunk/hello_puts` → `hello from host puts` |
 | `m6-phase2` | Generic thunk via dlsym + FP args | `tests/thunk/cos_test` → `cos(0.0)=1.0 OK` |
+| `m6-phase2b-multiarg` | FMOV immediate + multi-arg thunk | `fma(2,3,4)=10`, `test_d4=4321`, `test_i6=654321` |
+| `m6-phase3-mvp` | GOT trampoline — guest indirect call | `tests/thunk/test_got` → `hello from GOT trampoline` |
 
 ---
 
@@ -155,7 +157,7 @@ bash tests/run-stress.sh
 6. Glibc bukan target ATL — jangan lanjut wip/glibc-write
 7. Null deref di glibc = bug loader, bukan decoder
 
-## Next: M6 Phase 3 (dynamic .so + callback)
+## Next: M6 Phase 3 full (proper .rela.plt parser)
 
 Phase 1 (MVP) selesai: hardcoded `puts` via `THUNK_BASE + idx`.
 
@@ -187,3 +189,17 @@ Setelah Phase 2 (generic thunk + FP args) berjalan:
 3. **Test**: `.so` ARM64 handwritten panggil `write` via `libc.so` yang di-`dlopen`
 
 Setelah Phase 3: Bionic shim ARM64 (M3.6) + ATL integration (M7) terbuka.
+
+## M6.3 MVP status — GOT trampoline works
+
+MVP (this session): magic `0xDEADBEEFDEADBEEF` in `.data` replaced by loader
+with trampoline address. Guest `ldr x16, [got]; blr x16` executes trampoline.
+
+Full M6.3 (next session, 2-4 jam):
+1. Parse `PT_DYNAMIC`, `DT_RELA`, `DT_RELASZ`
+2. Iterate `R_AARCH64_JUMP_SLOT` entries
+3. Resolve symbol name: `r_info` → `.dynsym[r_info>>32].st_name` → `.dynstr`
+4. For each unresolved symbol: allocate trampoline, add to thunk table,
+   lookup host via dlsym
+5. Replace magic-scan with proper GOT patch
+6. Test: `.so` dynamically linked, calls `write` via PLT
